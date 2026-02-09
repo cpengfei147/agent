@@ -78,17 +78,27 @@ class CollectorAgent:
             if result.is_valid:
                 updated_fields = self._update_field(updated_fields, field_name, result)
 
-        # Determine sub-task and next action
-        sub_task = self._determine_sub_task(target_field, updated_fields, validation_results)
+        # ============ LLM 驱动的流程控制 ============
+        # 优先使用 Router LLM 的 guide_to_field 决策
+        router_guide_to_field = router_output.response_strategy.guide_to_field
 
-        # Check if we need to collect more info for current field
-        needs_more_info = self._needs_more_info(target_field, updated_fields, sub_task)
+        # 检查是否有字段需要验证追问
+        validation_override = None
+        for field_name, result in validation_results.items():
+            if result.status == "needs_verification":
+                validation_override = field_name
+                break
 
-        # Determine next field to collect
-        if needs_more_info:
-            next_field = target_field
+        # 决定 next_field - LLM 驱动优先
+        if validation_override:
+            next_field = validation_override
+        elif router_guide_to_field:
+            next_field = router_guide_to_field
         else:
             next_field = self._get_next_field(updated_fields)
+
+        # 确定 sub_task
+        sub_task = self._determine_sub_task(next_field, updated_fields, validation_results)
 
         # Check if ready for confirmation
         needs_confirmation = self._check_completion(updated_fields)
@@ -187,15 +197,27 @@ class CollectorAgent:
                                 updated_fields["skipped_fields_reviewed"] = True
                                 logger.info("All skipped fields resolved, marking reviewed")
 
-        # Determine sub-task and next action
-        # First check if any validated field needs verification - override target_field
+        # ============ LLM 驱动的流程控制 ============
+        # 核心原则：Router LLM 决定 guide_to_field，Collector 只在特殊情况下覆盖
+        #
+        # 优先级：
+        # 1. 验证结果需要追问（needs_verification）→ 覆盖为当前字段
+        # 2. Router 的 guide_to_field → 使用 Router 的决策
+        # 3. Fallback → 使用代码逻辑（仅当 Router 没有输出 guide_to_field）
+
+        router_guide_to_field = router_output.response_strategy.guide_to_field
+        logger.info(f"Router guide_to_field: {router_guide_to_field}")
+
+        # 检查是否有字段需要验证追问
+        validation_override = None
         for field_name, result in validation_results.items():
             if result.status == "needs_verification":
-                target_field = field_name  # Override to the field that needs follow-up
-                logger.info(f"Field {field_name} needs verification, overriding target_field")
+                validation_override = field_name
+                logger.info(f"Field {field_name} needs verification, will override next_field")
                 break
 
-        # Check if to_address is a major city without district - should ask for more detail
+        # 检查 to_address 是否是大城市但没有区（可选追问）
+        to_address_needs_district = False
         if "to_address" in validation_results and validation_results["to_address"].status == "baseline":
             to_addr = updated_fields.get("to_address", {})
             if isinstance(to_addr, dict):
@@ -204,27 +226,31 @@ class CollectorAgent:
                                "京都市", "広島市", "仙台市", "北九州市", "千葉市", "さいたま市",
                                "川崎市", "堺市", "新潟市", "浜松市", "熊本市", "相模原市", "岡山市", "静岡市"]
                 if city in major_cities and not to_addr.get("district"):
-                    target_field = "to_address"  # Stay on to_address to ask for district
-                    logger.info(f"Major city {city} without district, staying on to_address")
+                    to_address_needs_district = True
+                    logger.info(f"Major city {city} without district, may ask for more detail")
 
-        sub_task = self._determine_sub_task(target_field, updated_fields, validation_results)
-        needs_more_info = self._needs_more_info(target_field, updated_fields, sub_task)
-
-        if needs_more_info:
-            next_field = target_field
+        # 决定 next_field - LLM 驱动优先
+        if validation_override:
+            # 1. 验证结果需要追问 - 最高优先级
+            next_field = validation_override
+            target_field = validation_override
+            logger.info(f"next_field set by validation override: {next_field}")
+        elif to_address_needs_district and router_guide_to_field == "to_address":
+            # 2. Router 说继续问 to_address，且确实需要更多信息
+            next_field = "to_address"
+            target_field = "to_address"
+            logger.info(f"next_field set by Router (to_address needs district): {next_field}")
+        elif router_guide_to_field:
+            # 3. 使用 Router LLM 的决策 - 这是 LLM 驱动的核心
+            next_field = router_guide_to_field
+            logger.info(f"next_field set by Router LLM guide_to_field: {next_field}")
         else:
+            # 4. Fallback - 仅当 Router 没有输出 guide_to_field 时使用代码逻辑
             next_field = self._get_next_field(updated_fields)
+            logger.info(f"next_field set by fallback (get_next_priority_field): {next_field}")
 
-        # Double-check: if sub_task indicates follow-up needed, ensure next_field matches
-        if sub_task in ["ask_postal", "ask_city", "ask_specific", "ask_period"]:
-            field_map = {
-                "ask_postal": "from_address",
-                "ask_city": "to_address",
-                "ask_specific": "move_date",
-                "ask_period": "move_date"
-            }
-            next_field = field_map.get(sub_task, next_field)
-            logger.info(f"Sub-task {sub_task} requires next_field={next_field}")
+        # 确定 sub_task（用于 Collector prompt 的细化指导）
+        sub_task = self._determine_sub_task(next_field, updated_fields, validation_results)
 
         needs_confirmation = self._check_completion(updated_fields)
 
