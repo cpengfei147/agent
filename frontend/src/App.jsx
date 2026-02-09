@@ -58,6 +58,10 @@ function App() {
   const [isRecognizing, setIsRecognizing] = useState(false)
   const [recognitionStep, setRecognitionStep] = useState(0)
 
+  // 打字效果队列
+  const textQueueRef = useRef([])
+  const isTypingRef = useRef(false)
+
   // 多选状态（阶段5特殊注意事项）
   const [selectedOptions, setSelectedOptions] = useState([])
 
@@ -77,6 +81,35 @@ function App() {
   // 滚动到底部
   const scrollToBottom = useCallback(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [])
+
+  // 打字效果处理
+  const processTextQueue = useCallback(() => {
+    if (isTypingRef.current || textQueueRef.current.length === 0) return
+
+    isTypingRef.current = true
+
+    const typeNextChar = () => {
+      if (textQueueRef.current.length === 0) {
+        isTypingRef.current = false
+        return
+      }
+
+      const char = textQueueRef.current.shift()
+      setMessages(prev => {
+        const last = prev[prev.length - 1]
+        if (last?.role === 'assistant' && last?.streaming) {
+          return [...prev.slice(0, -1), { ...last, content: last.content + char }]
+        }
+        return [...prev, { role: 'assistant', content: char, streaming: true }]
+      })
+
+      // 根据字符类型调整延迟
+      const delay = char === '\n' ? 50 : (char.match(/[，。！？、]/) ? 30 : 15)
+      setTimeout(typeNextChar, delay)
+    }
+
+    typeNextChar()
   }, [])
 
   useEffect(() => {
@@ -134,24 +167,30 @@ function App() {
 
       case MSG_TYPES.TEXT_DELTA:
         setIsLoading(true)
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (last?.role === 'assistant' && last?.streaming) {
-            return [...prev.slice(0, -1), { ...last, content: last.content + data.content }]
-          }
-          return [...prev, { role: 'assistant', content: data.content, streaming: true }]
-        })
+        // 将内容加入打字队列
+        for (const char of data.content) {
+          textQueueRef.current.push(char)
+        }
+        processTextQueue()
         break
 
       case MSG_TYPES.TEXT_DONE:
-        setIsLoading(false)
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (last?.streaming) {
-            return [...prev.slice(0, -1), { ...last, streaming: false }]
+        // 等待打字队列处理完成
+        const waitForTyping = () => {
+          if (textQueueRef.current.length > 0 || isTypingRef.current) {
+            setTimeout(waitForTyping, 50)
+          } else {
+            setIsLoading(false)
+            setMessages(prev => {
+              const last = prev[prev.length - 1]
+              if (last?.streaming) {
+                return [...prev.slice(0, -1), { ...last, streaming: false }]
+              }
+              return prev
+            })
           }
-          return prev
-        })
+        }
+        waitForTyping()
         break
 
       case MSG_TYPES.METADATA:
@@ -196,7 +235,7 @@ function App() {
       default:
         console.log('Unknown message type:', data.type)
     }
-  }, [])
+  }, [processTextQueue])
 
   // 重置状态
   const resetState = () => {
@@ -208,6 +247,8 @@ function App() {
     setQuickOptions([])
     setUiComponent({ type: 'none' })
     setSelectedOptions([])
+    textQueueRef.current = []
+    isTypingRef.current = false
   }
 
   // 发送消息
