@@ -1,12 +1,14 @@
-"""Item Service - Vision API integration and item catalog management"""
+"""Item Service - Vision API integration and item catalog management
+
+Uses Google Gemini for image recognition of furniture and household items.
+"""
 
 import base64
 import logging
+import json
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
-
-from openai import AsyncOpenAI
 
 from app.config import settings
 
@@ -128,17 +130,29 @@ ITEM_CATALOG = {
 
 
 class ItemService:
-    """Service for item recognition and catalog management"""
+    """Service for item recognition and catalog management
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.openai_api_key
-        self._client: Optional[AsyncOpenAI] = None
+    Uses Google Gemini for image recognition.
+    """
 
-    def _get_client(self) -> AsyncOpenAI:
-        """Get or create OpenAI client"""
-        if self._client is None:
-            self._client = AsyncOpenAI(api_key=self.api_key)
-        return self._client
+    def __init__(self):
+        self.api_key = settings.gemini_api_key
+        self.model_name = settings.gemini_model
+        self._model = None
+
+    def _get_model(self):
+        """Lazy load Gemini model"""
+        if self._model is None and self.api_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self.api_key)
+                self._model = genai.GenerativeModel(self.model_name)
+                logger.info(f"Gemini model initialized: {self.model_name}")
+            except ImportError:
+                logger.error("google-generativeai package not installed. Run: pip install google-generativeai")
+            except Exception as e:
+                logger.error(f"Failed to initialize Gemini model: {e}")
+        return self._model
 
     async def analyze_image(
         self,
@@ -146,7 +160,7 @@ class ItemService:
         image_type: str = "image/jpeg"
     ) -> ImageRecognitionResult:
         """
-        Analyze an image using OpenAI Vision API to identify furniture/items
+        Analyze an image using Google Gemini Vision API to identify furniture/items
 
         Args:
             image_data: Raw image bytes
@@ -155,66 +169,60 @@ class ItemService:
         Returns:
             ImageRecognitionResult with identified items
         """
-        try:
-            client = self._get_client()
-
-            # Encode image to base64
-            base64_image = base64.b64encode(image_data).decode("utf-8")
-
-            # Build the prompt for furniture/item recognition
-            system_prompt = """You are an expert at identifying furniture and household items in images for a moving service.
-Analyze the image and identify all furniture, appliances, and other movable items.
-
-For each item found, provide:
-1. name_ja: Japanese name of the item
-2. name: English name
-3. category: one of "large_furniture", "appliances", or "small_items"
-4. count: number of this item visible
-5. size_estimate: "small", "medium", or "large"
-6. confidence: your confidence level from 0 to 1
-
-Respond in JSON format with an "items" array. Example:
-{
-  "items": [
-    {"name_ja": "Single Bed", "name": "Single bed", "category": "large_furniture", "count": 1, "size_estimate": "large", "confidence": 0.95},
-    {"name_ja": "TV Stand", "name": "TV stand", "category": "large_furniture", "count": 1, "size_estimate": "medium", "confidence": 0.8}
-  ],
-  "description": "A bedroom with a single bed, TV stand, and small desk."
-}
-
-Focus on items relevant for moving: furniture, appliances, boxes, storage items.
-Ignore small items like books, decorations, or fixed fixtures."""
-
-            response = await client.chat.completions.create(
-                model="gpt-4o",  # Using GPT-4o which has vision capabilities
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Please identify all furniture and household items in this image that would need to be moved."
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{image_type};base64,{base64_image}",
-                                    "detail": "high"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                max_tokens=1000,
-                response_format={"type": "json_object"}
+        model = self._get_model()
+        if not model:
+            return ImageRecognitionResult(
+                success=False,
+                error="Gemini model not initialized. Check GEMINI_API_KEY."
             )
 
-            # Parse the response
-            content = response.choices[0].message.content
-            if content:
-                import json
-                result_data = json.loads(content)
+        try:
+            import google.generativeai as genai
+            from PIL import Image
+            import io
+
+            # Convert bytes to PIL Image
+            image = Image.open(io.BytesIO(image_data))
+
+            # Build the prompt for furniture/item recognition
+            prompt = """你是一个搬家物品识别专家。请分析这张图片，识别出所有需要搬运的家具、家电和物品。
+
+对于每个识别出的物品，请提供：
+1. name_ja: 日语名称（如：ダンボール、冷蔵庫、ベッド）
+2. name: 中文名称
+3. category: 分类，必须是以下之一："large_furniture"（大型家具）、"appliances"（家电）、"small_items"（小物品/箱子）
+4. count: 数量
+5. size_estimate: 尺寸估计："small"、"medium" 或 "large"
+
+请严格按照以下JSON格式返回，不要包含其他文字：
+{
+  "items": [
+    {"name_ja": "ダンボール", "name": "纸箱", "category": "small_items", "count": 5, "size_estimate": "medium"},
+    {"name_ja": "冷蔵庫", "name": "冰箱", "category": "appliances", "count": 1, "size_estimate": "large"}
+  ],
+  "description": "图片描述"
+}
+
+注意：
+- 只识别需要搬运的物品（家具、家电、箱子、行李等）
+- 忽略固定设施（门、窗、墙壁装饰等）
+- 如果看到多个相同物品，合并计数
+- 纸箱/段ボール 要准确计数"""
+
+            # Generate content with image
+            response = model.generate_content([prompt, image])
+
+            if response and response.text:
+                # Parse JSON from response
+                response_text = response.text.strip()
+
+                # Try to extract JSON if wrapped in markdown code blocks
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
+
+                result_data = json.loads(response_text)
 
                 items = []
                 for item_data in result_data.get("items", []):
@@ -229,11 +237,12 @@ Ignore small items like books, decorations, or fixed fixtures."""
                         name_ja=item_data.get("name_ja", "Unknown"),
                         category=category,
                         count=item_data.get("count", 1),
-                        confidence=item_data.get("confidence", 0.5),
+                        confidence=0.85,  # Gemini doesn't return confidence
                         size_estimate=item_data.get("size_estimate"),
                         note=item_data.get("note")
                     ))
 
+                logger.info(f"Gemini recognized {len(items)} items from image")
                 return ImageRecognitionResult(
                     success=True,
                     items=items,
@@ -242,11 +251,17 @@ Ignore small items like books, decorations, or fixed fixtures."""
 
             return ImageRecognitionResult(
                 success=False,
-                error="Empty response from Vision API"
+                error="Empty response from Gemini Vision API"
             )
 
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Gemini response as JSON: {e}")
+            return ImageRecognitionResult(
+                success=False,
+                error=f"Invalid JSON response: {str(e)}"
+            )
         except Exception as e:
-            logger.error(f"Image analysis failed: {e}")
+            logger.error(f"Gemini image analysis failed: {e}")
             return ImageRecognitionResult(
                 success=False,
                 error=str(e)
@@ -254,7 +269,7 @@ Ignore small items like books, decorations, or fixed fixtures."""
 
     async def analyze_image_url(self, image_url: str) -> ImageRecognitionResult:
         """
-        Analyze an image from URL using OpenAI Vision API
+        Analyze an image from URL using Gemini Vision API
 
         Args:
             image_url: URL of the image to analyze
@@ -263,79 +278,17 @@ Ignore small items like books, decorations, or fixed fixtures."""
             ImageRecognitionResult with identified items
         """
         try:
-            client = self._get_client()
+            import httpx
 
-            system_prompt = """You are an expert at identifying furniture and household items in images for a moving service.
-Analyze the image and identify all furniture, appliances, and other movable items.
+            # Download image from URL
+            async with httpx.AsyncClient() as client:
+                response = await client.get(image_url)
+                response.raise_for_status()
+                image_data = response.content
+                content_type = response.headers.get("content-type", "image/jpeg")
 
-For each item found, provide:
-1. name_ja: Japanese name of the item
-2. name: English name
-3. category: one of "large_furniture", "appliances", or "small_items"
-4. count: number of this item visible
-5. size_estimate: "small", "medium", or "large"
-6. confidence: your confidence level from 0 to 1
-
-Respond in JSON format with an "items" array. Focus on items relevant for moving."""
-
-            response = await client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Please identify all furniture and household items in this image that would need to be moved."
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": image_url,
-                                    "detail": "high"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                max_tokens=1000,
-                response_format={"type": "json_object"}
-            )
-
-            content = response.choices[0].message.content
-            if content:
-                import json
-                result_data = json.loads(content)
-
-                items = []
-                for item_data in result_data.get("items", []):
-                    category_str = item_data.get("category", "small_items")
-                    try:
-                        category = ItemCategory(category_str)
-                    except ValueError:
-                        category = ItemCategory.SMALL_ITEMS
-
-                    items.append(RecognizedItem(
-                        name=item_data.get("name", "Unknown"),
-                        name_ja=item_data.get("name_ja", "Unknown"),
-                        category=category,
-                        count=item_data.get("count", 1),
-                        confidence=item_data.get("confidence", 0.5),
-                        size_estimate=item_data.get("size_estimate"),
-                        note=item_data.get("note")
-                    ))
-
-                return ImageRecognitionResult(
-                    success=True,
-                    items=items,
-                    raw_description=result_data.get("description")
-                )
-
-            return ImageRecognitionResult(
-                success=False,
-                error="Empty response from Vision API"
-            )
+            # Use the analyze_image method
+            return await self.analyze_image(image_data, content_type)
 
         except Exception as e:
             logger.error(f"Image URL analysis failed: {e}")

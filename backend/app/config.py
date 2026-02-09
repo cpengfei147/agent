@@ -8,13 +8,18 @@ class Settings(BaseSettings):
     # Environment
     env: str = "development"
 
-    # LLM - OpenAI
+    # LLM - OpenAI compatible (supports DeepSeek, etc.)
     openai_api_key: str
+    openai_base_url: Optional[str] = None  # 设置为 DeepSeek 等兼容 API 的 base_url
     openai_model: str = "gpt-4o"
     openai_timeout: int = 30
 
-    # Google Maps
+    # Google Maps (地址验证)
     google_maps_api_key: Optional[str] = None
+
+    # Google Gemini (图像识别)
+    gemini_api_key: Optional[str] = None
+    gemini_model: str = "gemini-2.0-flash"
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/erabu"
