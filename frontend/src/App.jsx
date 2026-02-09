@@ -62,8 +62,8 @@ function App() {
   const textQueueRef = useRef([])
   const isTypingRef = useRef(false)
 
-  // 是否刚点击过快捷选项（用于阻止重复弹出）
-  const justClickedOptionRef = useRef(false)
+  // 上次的快捷选项（用于避免重复显示）
+  const lastOptionsRef = useRef([])
 
   // 多选状态（阶段5特殊注意事项）
   const [selectedOptions, setSelectedOptions] = useState([])
@@ -199,11 +199,15 @@ function App() {
       case MSG_TYPES.METADATA:
         if (data.current_phase !== undefined) setCurrentPhase(data.current_phase)
         if (data.fields_status) setFieldsStatus(data.fields_status)
-        // 如果刚点击过快捷选项，不弹出新的选项
-        if (data.quick_options && !justClickedOptionRef.current) {
-          setQuickOptions(data.quick_options || [])
+        // 只有当新选项与上次选项不同时才更新（避免重复显示相同选项）
+        if (data.quick_options) {
+          const newOptions = data.quick_options || []
+          const isSame = JSON.stringify(newOptions) === JSON.stringify(lastOptionsRef.current)
+          if (!isSame) {
+            setQuickOptions(newOptions)
+            lastOptionsRef.current = newOptions
+          }
         }
-        justClickedOptionRef.current = false // 重置标志
         if (data.ui_component) setUiComponent(data.ui_component)
         if (data.completion) setCompletion(data.completion)
         break
@@ -278,6 +282,7 @@ function App() {
     wsRef.current.send(JSON.stringify({ type: 'message', content }))
     setInputValue('')
     setQuickOptions([]) // 发送消息后清空快捷选项
+    lastOptionsRef.current = [] // 重置上次选项记录
     setIsLoading(true)
   }, [isConnected, currentPhase])
 
@@ -306,10 +311,8 @@ function App() {
         sendMessage(selectedOptions.join('、'))
         setSelectedOptions([])
       }
-      justClickedOptionRef.current = true // 标记刚点击过快捷选项
       sendMessage(option)
     } else {
-      justClickedOptionRef.current = true // 标记刚点击过快捷选项
       sendMessage(option)
     }
   }, [selectedOptions, sendMessage])
