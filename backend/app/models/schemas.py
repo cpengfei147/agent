@@ -202,7 +202,8 @@ class RouterOutput(BaseModel):
     intent: Intent
     extracted_fields: Dict[str, ExtractedField] = {}
     user_emotion: Emotion = Emotion.NEUTRAL
-    current_phase: int = 0
+    current_phase: int = 0  # 处理消息前的阶段
+    phase_after_update: int = 0  # 处理消息后应该进入的阶段（由LLM决定）
     next_actions: List[Action] = []
     response_strategy: ResponseStrategy
     updated_fields_status: Dict[str, Any] = {}

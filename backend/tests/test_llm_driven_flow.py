@@ -21,6 +21,7 @@ from app.models.schemas import (
 )
 from app.models.fields import FieldStatus, Phase, get_default_fields
 from app.core.phase_inference import infer_phase, get_next_priority_field, get_completion_info
+from app.services.field_validator import ValidationResult
 
 
 # ============ Fixtures ============
@@ -854,3 +855,140 @@ class TestPriorityOrder:
     def test_all_complete_returns_none(self, phase6_fields):
         """All fields complete should return None"""
         assert get_next_priority_field(phase6_fields) is None
+
+
+# ============ Phase 5 Missing Fields Tests ============
+
+class TestPhase5MissingFields:
+    """Test that phase 5 correctly calculates missing fields"""
+
+    def test_phase5_missing_fields_kodate(self):
+        """戸建て: should have 3 missing fields (to_floor, packing, special_notes)"""
+        fields = get_default_fields()
+        fields["people_count"] = 2
+        fields["people_count_status"] = FieldStatus.IDEAL.value
+        fields["from_address"] = {
+            "postal_code": "150-0001",
+            "status": FieldStatus.BASELINE.value,
+            "building_type": "戸建て"  # Non-apartment
+        }
+        fields["to_address"] = {
+            "city": "大阪市",
+            "status": FieldStatus.BASELINE.value
+        }
+        fields["move_date"] = {
+            "day": 15,
+            "status": FieldStatus.BASELINE.value
+        }
+        fields["items"] = {
+            "list": [{"name": "冷蔵庫"}],
+            "status": FieldStatus.BASELINE.value
+        }
+
+        completion_info = get_completion_info(fields)
+        missing = completion_info["missing_fields"]
+
+        # 戸建て: from_floor_elevator auto-complete
+        assert "from_floor_elevator" not in missing
+        # These should be missing:
+        assert "to_floor_elevator" in missing
+        assert "packing_service" in missing
+        assert "special_notes" in missing
+        # Total: 3 missing fields
+        phase5_missing = [f for f in missing if f in [
+            "from_floor_elevator", "to_floor_elevator",
+            "packing_service", "special_notes"
+        ]]
+        assert len(phase5_missing) == 3
+
+    def test_phase5_missing_fields_mansion(self):
+        """マンション: should have 4 missing fields (from_floor, to_floor, packing, special_notes)"""
+        fields = get_default_fields()
+        fields["people_count"] = 2
+        fields["people_count_status"] = FieldStatus.IDEAL.value
+        fields["from_address"] = {
+            "postal_code": "150-0001",
+            "status": FieldStatus.BASELINE.value,
+            "building_type": "マンション"  # Apartment - needs floor info
+        }
+        fields["to_address"] = {
+            "city": "大阪市",
+            "status": FieldStatus.BASELINE.value
+        }
+        fields["move_date"] = {
+            "day": 15,
+            "status": FieldStatus.BASELINE.value
+        }
+        fields["items"] = {
+            "list": [{"name": "冷蔵庫"}],
+            "status": FieldStatus.BASELINE.value
+        }
+
+        completion_info = get_completion_info(fields)
+        missing = completion_info["missing_fields"]
+
+        # マンション: from_floor_elevator required
+        assert "from_floor_elevator" in missing
+        assert "to_floor_elevator" in missing
+        assert "packing_service" in missing
+        assert "special_notes" in missing
+        # Total: 4 missing fields
+        phase5_missing = [f for f in missing if f in [
+            "from_floor_elevator", "to_floor_elevator",
+            "packing_service", "special_notes"
+        ]]
+        assert len(phase5_missing) == 4
+
+    def test_phase5_missing_fields_building_type_unknown(self):
+        """building_type未知: from_building_type should be in missing"""
+        fields = get_default_fields()
+        fields["people_count"] = 2
+        fields["people_count_status"] = FieldStatus.IDEAL.value
+        fields["from_address"] = {
+            "postal_code": "150-0001",
+            "status": FieldStatus.BASELINE.value
+            # No building_type
+        }
+        fields["to_address"] = {
+            "city": "大阪市",
+            "status": FieldStatus.BASELINE.value
+        }
+        fields["move_date"] = {
+            "day": 15,
+            "status": FieldStatus.BASELINE.value
+        }
+        fields["items"] = {
+            "list": [{"name": "冷蔵庫"}],
+            "status": FieldStatus.BASELINE.value
+        }
+
+        completion_info = get_completion_info(fields)
+        missing = completion_info["missing_fields"]
+
+        # building_type unknown: from_building_type is missing
+        assert "from_building_type" in missing
+        # from_floor_elevator should NOT be in missing until building_type is known
+        assert "from_floor_elevator" not in missing
+        # These should be missing:
+        assert "to_floor_elevator" in missing
+        assert "packing_service" in missing
+        assert "special_notes" in missing
+
+    def test_special_notes_done_exact_match(self):
+        """special_notes_done should only be set for exact match keywords"""
+        fields = get_default_fields()
+
+        # "没有其他" should complete special_notes
+        from app.agents.collector import CollectorAgent
+        collector = CollectorAgent()
+
+        # Test exact match
+        updated = collector._update_field(fields.copy(), "special_notes",
+            ValidationResult(is_valid=True, parsed_value="没有了", status="ideal"))
+        assert updated.get("special_notes_done") == True
+
+        # Test that partial match doesn't trigger (simulated)
+        updated2 = collector._update_field(fields.copy(), "special_notes",
+            ValidationResult(is_valid=True, parsed_value="没有其他行李了", status="ideal"))
+        # "没有其他行李了" is NOT an exact match, should not set done
+        assert updated2.get("special_notes_done", False) == False

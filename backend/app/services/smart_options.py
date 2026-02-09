@@ -63,8 +63,16 @@ async def get_smart_quick_options(
     """
     recent_messages = recent_messages or []
 
-    # === 唯一的固定选项场景：阶段5特殊注意事项 ===
-    # 6个固定选项，动态过滤已选的
+    # === 固定选项场景 ===
+
+    # 阶段6确认阶段：如果用户还未确认，显示确认相关选项
+    from app.core.phase_inference import get_completion_info
+    completion_info = get_completion_info(fields_status)
+    if completion_info["can_submit"] and not fields_status.get("user_confirmed_submit"):
+        # 用户可以提交但还未确认，显示确认选项
+        return ["确认无误，发送报价", "需要修改"]
+
+    # 阶段5特殊注意事项：6个固定选项，动态过滤已选的
     if next_field == "special_notes":
         all_options = ["有宜家家具", "有钢琴需要搬运", "空调安装", "空调拆卸", "不用品回收", "没有了"]
         selected = fields_status.get("special_notes", [])

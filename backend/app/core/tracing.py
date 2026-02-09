@@ -65,13 +65,12 @@ class AgentTrace:
         self.trace = None
         self.spans = {}
 
-        # Initialize Langfuse trace
+        # Initialize Langfuse trace (新版 API 使用 start_span 作为根)
         langfuse = get_langfuse()
         if langfuse:
-            self.trace = langfuse.trace(
+            self.trace = langfuse.start_span(
                 name=trace_name,
-                session_id=session_id,
-                input={"user_message": user_message},
+                input={"user_message": user_message, "session_id": session_id},
                 metadata={"start_time": self.start_time.isoformat()}
             )
 
@@ -82,8 +81,9 @@ class AgentTrace:
         metadata: Dict[str, Any] = None
     ) -> Optional[str]:
         """Start a new span within the trace"""
-        if self.trace:
-            span = self.trace.span(
+        langfuse = get_langfuse()
+        if langfuse:
+            span = langfuse.start_span(
                 name=name,
                 input=input_data,
                 metadata=metadata
@@ -102,7 +102,10 @@ class AgentTrace:
         """End a span with output"""
         if span_id and span_id in self.spans:
             span = self.spans[span_id]
-            span.end(output=output_data, metadata=metadata)
+            # 新版 API: 先 update 设置 output，再 end
+            if output_data or metadata:
+                span.update(output=output_data, metadata=metadata)
+            span.end()
 
     def log_router_decision(
         self,
@@ -111,25 +114,29 @@ class AgentTrace:
         llm_response: str = None
     ):
         """Log Router decision details"""
-        if self.trace:
-            self.trace.span(
+        langfuse = get_langfuse()
+        if langfuse:
+            span = langfuse.start_span(
                 name="router_decision",
                 input={
                     "fields_status_summary": self._summarize_fields(fields_status),
                     "user_message": self.user_message
                 },
-                output={
-                    "intent": router_output.get("intent"),
-                    "extracted_fields": list(router_output.get("extracted_fields", {}).keys()),
-                    "guide_to_field": router_output.get("response_strategy", {}).get("guide_to_field"),
-                    "agent_type": router_output.get("response_strategy", {}).get("agent_type"),
-                    "user_emotion": router_output.get("user_emotion"),
-                    "current_phase": router_output.get("current_phase")
-                },
                 metadata={
                     "llm_raw_response": llm_response[:1000] if llm_response else None
                 }
             )
+            # 新版 API: 先 update 设置 output，再 end
+            span.update(output={
+                "intent": router_output.get("intent"),
+                "extracted_fields": list(router_output.get("extracted_fields", {}).keys()),
+                "guide_to_field": router_output.get("response_strategy", {}).get("guide_to_field"),
+                "agent_type": router_output.get("response_strategy", {}).get("agent_type"),
+                "user_emotion": router_output.get("user_emotion"),
+                "current_phase": router_output.get("current_phase"),
+                "phase_after_update": router_output.get("phase_after_update")
+            })
+            span.end()
 
     def log_collector_action(
         self,
@@ -140,17 +147,13 @@ class AgentTrace:
         decision_source: str = "router"
     ):
         """Log Collector action details"""
-        if self.trace:
-            self.trace.span(
+        langfuse = get_langfuse()
+        if langfuse:
+            span = langfuse.start_span(
                 name="collector_action",
                 input={
                     "target_field": target_field,
                     "decision_source": decision_source
-                },
-                output={
-                    "next_field": next_field,
-                    "fields_updated": list(validation_results.keys()) if validation_results else [],
-                    "fields_status_summary": self._summarize_fields(updated_fields)
                 },
                 metadata={
                     "validation_results": {
@@ -159,6 +162,13 @@ class AgentTrace:
                     }
                 }
             )
+            # 新版 API: 先 update 设置 output，再 end
+            span.update(output={
+                "next_field": next_field,
+                "fields_updated": list(validation_results.keys()) if validation_results else [],
+                "fields_status_summary": self._summarize_fields(updated_fields)
+            })
+            span.end()
 
     def log_phase_transition(
         self,
@@ -168,7 +178,8 @@ class AgentTrace:
         missing_fields: List[str] = None
     ):
         """Log phase transition"""
-        if self.trace:
+        langfuse = get_langfuse()
+        if langfuse:
             phase_names = {
                 0: "OPENING",
                 1: "PEOPLE_COUNT",
@@ -178,19 +189,21 @@ class AgentTrace:
                 5: "OTHER_INFO",
                 6: "CONFIRMATION"
             }
-            self.trace.span(
+            span = langfuse.start_span(
                 name="phase_transition",
                 input={
                     "from_phase": from_phase,
                     "from_phase_name": phase_names.get(from_phase, "UNKNOWN")
-                },
-                output={
-                    "to_phase": to_phase,
-                    "to_phase_name": phase_names.get(to_phase, "UNKNOWN"),
-                    "reason": reason,
-                    "missing_fields": missing_fields
                 }
             )
+            # 新版 API: 先 update 设置 output，再 end
+            span.update(output={
+                "to_phase": to_phase,
+                "to_phase_name": phase_names.get(to_phase, "UNKNOWN"),
+                "reason": reason,
+                "missing_fields": missing_fields
+            })
+            span.end()
 
     def log_field_update(
         self,
@@ -201,35 +214,42 @@ class AgentTrace:
         new_status: str
     ):
         """Log individual field update"""
-        if self.trace:
-            self.trace.event(
+        langfuse = get_langfuse()
+        if langfuse:
+            span = langfuse.start_span(
                 name="field_update",
                 input={
                     "field_name": field_name,
                     "old_value": self._safe_serialize(old_value),
                     "old_status": old_status
-                },
-                output={
-                    "new_value": self._safe_serialize(new_value),
-                    "new_status": new_status
                 }
             )
+            # 新版 API: 先 update 设置 output，再 end
+            span.update(output={
+                "new_value": self._safe_serialize(new_value),
+                "new_status": new_status
+            })
+            span.end()
 
     def log_completion_check(
         self,
         completion_info: Dict[str, Any]
     ):
         """Log completion check result"""
-        if self.trace:
-            self.trace.span(
+        langfuse = get_langfuse()
+        if langfuse:
+            span = langfuse.start_span(
                 name="completion_check",
-                output={
-                    "can_submit": completion_info.get("can_submit"),
-                    "completion_rate": completion_info.get("completion_rate"),
-                    "missing_fields": completion_info.get("missing_fields"),
-                    "next_priority_field": completion_info.get("next_priority_field")
-                }
+                input={"check_type": "completion"}
             )
+            # 新版 API: 先 update 设置 output，再 end
+            span.update(output={
+                "can_submit": completion_info.get("can_submit"),
+                "completion_rate": completion_info.get("completion_rate"),
+                "missing_fields": completion_info.get("missing_fields"),
+                "next_priority_field": completion_info.get("next_priority_field")
+            })
+            span.end()
 
     def log_llm_call(
         self,
@@ -241,18 +261,22 @@ class AgentTrace:
         latency_ms: float = None
     ):
         """Log LLM API call"""
-        if self.trace:
-            # Use generation for LLM calls
-            self.trace.generation(
+        langfuse = get_langfuse()
+        if langfuse:
+            # 新版 API: 使用 start_observation(as_type='generation')
+            generation = langfuse.start_observation(
+                as_type="generation",
                 name=f"{agent_name}_llm_call",
                 model=model,
                 input=messages,
-                output=response,
                 metadata={
                     "tokens_used": tokens_used,
                     "latency_ms": latency_ms
                 }
             )
+            # 先 update 设置 output，再 end
+            generation.update(output=response)
+            generation.end()
 
     def end(
         self,
@@ -261,6 +285,7 @@ class AgentTrace:
     ):
         """End the trace"""
         if self.trace:
+            # 新版 API: 先 update 设置 output 和 metadata，再 end
             self.trace.update(
                 output=output,
                 metadata={
@@ -268,6 +293,11 @@ class AgentTrace:
                     "duration_ms": (datetime.now() - self.start_time).total_seconds() * 1000
                 }
             )
+            self.trace.end()
+            # 确保数据发送到 Langfuse
+            langfuse = get_langfuse()
+            if langfuse:
+                langfuse.flush()
 
     def _summarize_fields(self, fields_status: Dict[str, Any]) -> Dict[str, str]:
         """Create a summary of fields status"""

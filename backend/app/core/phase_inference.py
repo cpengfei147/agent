@@ -297,15 +297,21 @@ def get_completion_info(fields_status: Dict[str, Any]) -> Dict[str, Any]:
     required_checks["from_building_type"] = building_type is not None
 
     # 判断是否需要询问楼层电梯（只有公寓类建筑需要）
-    needs_floor_info = building_type in apartment_types if building_type else False
+    # 注意：如果 building_type 还未收集，需要等待收集后才能判断
+    needs_floor_info = building_type in apartment_types if building_type else None  # None = 未知
 
     # from_floor_elevator - 只有公寓类建筑需要询问
-    if needs_floor_info:
+    if needs_floor_info is True:
+        # 确定是公寓类建筑，需要询问
         from_floor = fields_status.get("from_floor_elevator", {})
         floor_status = from_floor.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(from_floor, dict) else FieldStatus.NOT_COLLECTED.value
         required_checks["from_floor_elevator"] = is_skipped_or_done(floor_status)
+    elif needs_floor_info is False:
+        # 确定不是公寓类建筑（戸建て等），自动完成
+        required_checks["from_floor_elevator"] = True
     else:
-        required_checks["from_floor_elevator"] = True  # 非公寓类建筑，自动完成
+        # building_type 未知，暂不计入 missing_fields（等待 building_type 收集后再判断）
+        required_checks["from_floor_elevator"] = True  # 暂时标记为完成，避免重复计入
 
     # to_floor_elevator - 非必填，但要询问（独立于搬出地址的建筑类型）
     # 因为搬入地址可能是不同类型的建筑

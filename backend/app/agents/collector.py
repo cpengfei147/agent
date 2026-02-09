@@ -150,7 +150,8 @@ class CollectorAgent:
         target_field = self._determine_target_field(router_output, fields_status)
 
         # Validate and update extracted fields
-        updated_fields = fields_status.copy()
+        # 使用 Router 返回的 updated_fields_status 作为基础，保留 Router 设置的标志（如 special_notes_done）
+        updated_fields = router_output.updated_fields_status.copy() if router_output.updated_fields_status else fields_status.copy()
         validation_results = {}
 
         # 调试：检查 Router 提取了哪些字段
@@ -296,9 +297,11 @@ class CollectorAgent:
             "content": user_message
         })
 
-        # Stream LLM response
+        # Stream LLM response and collect full response
+        full_response = ""
         async for chunk in self.llm_client.chat(messages, stream=True):
             if chunk["type"] == "text_delta":
+                full_response += chunk["content"]
                 yield {
                     "type": "text_delta",
                     "content": chunk["content"]
@@ -313,10 +316,15 @@ class CollectorAgent:
                 return
 
         # Let LLM decide quick options based on context
+        # 关键：把 Agent 刚刚生成的回复也加入到上下文中，这样 LLM 才能根据实际回复内容判断选项
         from app.services.smart_options import get_smart_quick_options
+        messages_with_response = recent_messages + [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": full_response}  # <-- 加入 Agent 的回复
+        ]
         quick_options = await get_smart_quick_options(
             fields_status=updated_fields,
-            recent_messages=recent_messages + [{"role": "user", "content": user_message}],
+            recent_messages=messages_with_response,
             next_field=next_field
         )
 
@@ -609,17 +617,14 @@ class CollectorAgent:
             if "special_notes" not in updated:
                 updated["special_notes"] = []
 
-            # 处理用户输入
+            # LLM 驱动：special_notes_done 由 Router LLM 的 intent 判断
+            # 这里只添加实际的特殊需求
             if isinstance(value, list):
                 for v in value:
-                    if v == "没有了" or v == "没有其他":
-                        updated["special_notes_done"] = True
-                    elif v not in updated["special_notes"]:
+                    if v and v not in updated["special_notes"]:
                         updated["special_notes"].append(v)
             else:
-                if value == "没有了" or value == "没有其他":
-                    updated["special_notes_done"] = True
-                elif value not in updated["special_notes"]:
+                if value and value not in updated["special_notes"]:
                     updated["special_notes"].append(value)
 
             # Remove duplicates while preserving order

@@ -79,7 +79,8 @@ class RouterAgent:
             return self._parse_response(content, fields_status)
 
         except Exception as e:
-            logger.error(f"Router analysis error: {e}")
+            import traceback
+            logger.error(f"Router analysis error: {e}\n{traceback.format_exc()}")
             return self._get_fallback_output(user_message, fields_status)
 
     def _parse_response(self, content: str, fields_status: Dict[str, Any]) -> RouterOutput:
@@ -136,8 +137,9 @@ class RouterAgent:
             except ValueError:
                 emotion = Emotion.NEUTRAL
 
-            # Parse current phase
+            # Parse current phase and phase_after_update (LLM-driven phase transition)
             current_phase = int(data.get("current_phase", 0))
+            phase_after_update = int(data.get("phase_after_update", current_phase))
 
             # Parse next actions
             next_actions = []
@@ -179,11 +181,32 @@ class RouterAgent:
                 extracted_fields
             )
 
+            # 阶段6：检测用户是否确认提交报价
+            # 当 intent 是 confirm 或 request_quote，且在阶段6，设置确认标志
+            if current_phase == 6 and intent.primary in [IntentType.CONFIRM, IntentType.PROVIDE_INFO]:
+                # 检查用户消息是否包含确认关键词
+                confirm_keywords = ["没问题", "确认", "提交", "发送报价", "ok", "OK", "可以", "好的", "确定", "没错"]
+                # 这里我们需要通过 data 中的原始信息判断，但 intent 已经解析了
+                # 如果 LLM 判断 intent 是 confirm，就设置确认标志
+                pass  # 标志设置移到下面根据 intent 判断
+
+            # 当用户在阶段6明确表示确认时，设置标志
+            if phase_after_update == 6 and intent.primary == IntentType.CONFIRM:
+                updated_fields_status["user_confirmed_submit"] = True
+                logger.info("User confirmed submit in phase 6, setting user_confirmed_submit=True")
+
+            # LLM 驱动的 special_notes 完成判断
+            # 当 LLM 判断 intent 为 "complete" 且在阶段5，表示 special_notes 收集完成
+            if intent.primary == IntentType.COMPLETE and current_phase == 5:
+                updated_fields_status["special_notes_done"] = True
+                logger.info("LLM determined special_notes complete (intent=complete, phase=5)")
+
             return RouterOutput(
                 intent=intent,
                 extracted_fields=extracted_fields,
                 user_emotion=emotion,
                 current_phase=current_phase,
+                phase_after_update=phase_after_update,
                 next_actions=next_actions,
                 response_strategy=response_strategy,
                 updated_fields_status=updated_fields_status
@@ -363,16 +386,14 @@ class RouterAgent:
                 elif field_name == "special_notes":
                     if "special_notes" not in updated:
                         updated["special_notes"] = []
+                    # LLM 驱动：special_notes_done 由 intent.primary == "complete" 判断
+                    # 这里只添加实际的特殊需求
                     if isinstance(extracted.parsed_value, list):
                         for v in extracted.parsed_value:
-                            if v == "没有了" or v == "没有其他":
-                                updated["special_notes_done"] = True
-                            elif v not in updated["special_notes"]:
+                            if v and v not in updated["special_notes"]:
                                 updated["special_notes"].append(v)
                     else:
-                        if extracted.parsed_value == "没有了" or extracted.parsed_value == "没有其他":
-                            updated["special_notes_done"] = True
-                        elif extracted.parsed_value not in updated["special_notes"]:
+                        if extracted.parsed_value and extracted.parsed_value not in updated["special_notes"]:
                             updated["special_notes"].append(extracted.parsed_value)
 
         return updated
@@ -383,7 +404,7 @@ class RouterAgent:
         fields_status: Dict[str, Any]
     ) -> RouterOutput:
         """Get fallback output when parsing fails"""
-        # Infer phase from fields status
+        # Infer phase from fields status (fallback uses code logic)
         current_phase = self._infer_phase(fields_status)
 
         return RouterOutput(
@@ -395,6 +416,7 @@ class RouterAgent:
             extracted_fields={},
             user_emotion=Emotion.NEUTRAL,
             current_phase=current_phase,
+            phase_after_update=current_phase,  # Fallback: keep same phase
             next_actions=[
                 Action(
                     type=ActionType.COLLECT_FIELD,

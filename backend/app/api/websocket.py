@@ -68,32 +68,38 @@ def get_ui_component_for_phase(phase: Phase, fields_status: dict) -> dict:
             }
 
     # Phase 6 (CONFIRMATION) - Show confirmation or login card
+    # 只有当用户明确确认后才显示报价卡片
     if phase == Phase.CONFIRMATION:
         completion_info = get_completion_info(fields_status)
 
         if completion_info["can_submit"]:
-            # Check if user is logged in (has phone/email)
-            user_contact = fields_status.get("user_contact", {})
-            has_contact = bool(user_contact.get("phone") or user_contact.get("email"))
+            # 检查用户是否已明确确认要提交报价
+            user_confirmed = fields_status.get("user_confirmed_submit", False)
 
-            if has_contact:
-                # Show confirmation card with all collected info
-                return {
-                    "type": "confirm_card",
-                    "data": {
-                        "fields_status": fields_status,
-                        "completion_rate": completion_info["completion_rate"],
-                        "can_submit": True
+            if user_confirmed:
+                # 用户已确认，显示联系方式卡片
+                user_contact = fields_status.get("user_contact", {})
+                has_contact = bool(user_contact.get("phone") or user_contact.get("email"))
+
+                if has_contact:
+                    # Show confirmation card with all collected info
+                    return {
+                        "type": "confirm_card",
+                        "data": {
+                            "fields_status": fields_status,
+                            "completion_rate": completion_info["completion_rate"],
+                            "can_submit": True
+                        }
                     }
-                }
-            else:
-                # Show login card to collect contact info
-                return {
-                    "type": "login_card",
-                    "data": {
-                        "message": "请输入联系方式以便搬家公司与您联系"
+                else:
+                    # Show login card to collect contact info
+                    return {
+                        "type": "login_card",
+                        "data": {
+                            "message": "请输入联系方式以便搬家公司与您联系"
+                        }
                     }
-                }
+            # 用户未确认时，不显示卡片，让 Agent 先展示摘要并询问确认
 
     return {"type": "none"}
 
@@ -306,44 +312,54 @@ async def process_with_collector(
     await redis_client.add_message(session["session_token"], "user", user_message)
     await redis_client.add_message(session["session_token"], "assistant", full_response)
 
-    # Update session state
-    current_phase = infer_phase(updated_fields)
+    # Update session state - 使用 Router LLM 决定的阶段（而非硬编码的 infer_phase）
+    # Router 的 phase_after_update 是 LLM 根据阶段跳转规则决定的
+    llm_decided_phase = router_output.phase_after_update
+    fallback_phase = infer_phase(updated_fields)  # 作为兜底和日志对比
+
+    # 使用 LLM 决定的阶段，但记录与 fallback 的差异用于调试
+    current_phase_value = llm_decided_phase
+    if llm_decided_phase != fallback_phase.value:
+        logger.info(f"Phase decision: LLM={llm_decided_phase}, Fallback={fallback_phase.value} (using LLM)")
+
     completion_info = get_completion_info(updated_fields)
 
     await redis_client.set_session(
         session_token=session["session_token"],
         session_id=session["session_id"],
-        current_phase=current_phase.value,
+        current_phase=current_phase_value,
         fields_status=updated_fields
     )
 
     session["fields_status"] = updated_fields
-    session["current_phase"] = current_phase.value
+    session["current_phase"] = current_phase_value
 
     # Log Collector action with tracing
     tracer.log_collector(
         target_field=router_output.response_strategy.guide_to_field or "unknown",
         next_field=collector_metadata.get("next_field", "unknown"),
-        decision_source="router" if router_output.response_strategy.guide_to_field else "fallback",
+        decision_source="router_llm",  # 标记为 LLM 驱动
         updated_fields=list(collector_metadata.get("validation_results", {}).keys())
     )
 
     # Log phase transition if changed
-    if current_phase.value != old_phase:
+    if current_phase_value != old_phase:
         tracer.log_phase(
             from_phase=old_phase,
-            to_phase=current_phase.value,
+            to_phase=current_phase_value,
             completion_rate=completion_info["completion_rate"],
             missing_fields=completion_info["missing_fields"]
         )
 
-    # Determine UI component based on phase
-    ui_component = get_ui_component_for_phase(current_phase, updated_fields)
+    # Determine UI component based on phase (convert int to Phase enum for compatibility)
+    from app.models.fields import Phase as PhaseEnum
+    phase_enum = PhaseEnum(current_phase_value)
+    ui_component = get_ui_component_for_phase(phase_enum, updated_fields)
 
     # Send metadata with enhanced debug info
     await websocket.send_json({
         "type": "metadata",
-        "current_phase": current_phase.value,
+        "current_phase": current_phase_value,
         "fields_status": updated_fields,
         "completion": {
             "can_submit": completion_info["can_submit"],
@@ -362,13 +378,15 @@ async def process_with_collector(
             "emotion": router_output.user_emotion.value,
             "agent_type": router_output.response_strategy.agent_type.value,
             "guide_to_field": router_output.response_strategy.guide_to_field,
-            "extracted_fields": list(router_output.extracted_fields.keys())
+            "extracted_fields": list(router_output.extracted_fields.keys()),
+            "phase_after_update": router_output.phase_after_update  # LLM决定的阶段
         },
         "collector_debug": {
             "next_field": collector_metadata.get("next_field"),
             "sub_task": collector_metadata.get("sub_task"),
             "needs_confirmation": collector_metadata.get("needs_confirmation"),
-            "validation_results": collector_metadata.get("validation_results", {})
+            "validation_results": collector_metadata.get("validation_results", {}),
+            "fallback_phase": fallback_phase.value  # 对比：代码逻辑的阶段
         }
     })
 
@@ -424,24 +442,24 @@ async def process_with_advisor(
     await redis_client.add_message(session["session_token"], "user", user_message)
     await redis_client.add_message(session["session_token"], "assistant", full_response)
 
-    # Update session (advisor doesn't change fields)
-    current_phase = infer_phase(updated_fields)
+    # Update session (advisor doesn't change fields) - 使用 LLM 决定的阶段
+    current_phase_value = router_output.phase_after_update
     completion_info = get_completion_info(updated_fields)
 
     await redis_client.set_session(
         session_token=session["session_token"],
         session_id=session["session_id"],
-        current_phase=current_phase.value,
+        current_phase=current_phase_value,
         fields_status=updated_fields
     )
 
     session["fields_status"] = updated_fields
-    session["current_phase"] = current_phase.value
+    session["current_phase"] = current_phase_value
 
     # Send metadata
     await websocket.send_json({
         "type": "metadata",
-        "current_phase": current_phase.value,
+        "current_phase": current_phase_value,
         "fields_status": updated_fields,
         "completion": {
             "can_submit": completion_info["can_submit"],
@@ -458,7 +476,8 @@ async def process_with_advisor(
                 "confidence": router_output.intent.confidence
             },
             "emotion": router_output.user_emotion.value,
-            "agent_type": "advisor"
+            "agent_type": "advisor",
+            "phase_after_update": router_output.phase_after_update
         }
     })
 
@@ -510,24 +529,24 @@ async def process_with_companion(
     await redis_client.add_message(session["session_token"], "user", user_message)
     await redis_client.add_message(session["session_token"], "assistant", full_response)
 
-    # Update session (companion doesn't change fields)
-    current_phase = infer_phase(updated_fields)
+    # Update session (companion doesn't change fields) - 使用 LLM 决定的阶段
+    current_phase_value = router_output.phase_after_update
     completion_info = get_completion_info(updated_fields)
 
     await redis_client.set_session(
         session_token=session["session_token"],
         session_id=session["session_id"],
-        current_phase=current_phase.value,
+        current_phase=current_phase_value,
         fields_status=updated_fields
     )
 
     session["fields_status"] = updated_fields
-    session["current_phase"] = current_phase.value
+    session["current_phase"] = current_phase_value
 
     # Send metadata
     await websocket.send_json({
         "type": "metadata",
-        "current_phase": current_phase.value,
+        "current_phase": current_phase_value,
         "fields_status": updated_fields,
         "completion": {
             "can_submit": completion_info["can_submit"],
@@ -544,7 +563,8 @@ async def process_with_companion(
                 "confidence": router_output.intent.confidence
             },
             "emotion": router_output.user_emotion.value,
-            "agent_type": "companion"
+            "agent_type": "companion",
+            "phase_after_update": router_output.phase_after_update
         }
     })
 

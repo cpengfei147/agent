@@ -178,6 +178,12 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - special_notes: {{"raw_value": "没有了", "parsed_value": ["没有了"], "needs_verification": false, "confidence": 0.9}}
 并且 intent.primary 应为 "complete"
 
+## 示例13：用户确认跳过特殊注意事项
+上下文：Agent 询问特殊注意事项，用户表示没有或要跳过
+用户说："确认跳过" / "跳过" / "没什么特别的" / "没有其他了" / "就这些" / "没有"
+intent.primary 应为 "complete"（表示 special_notes 收集完成）
+phase_after_update 应为 6（进入确认阶段）
+
 ## 重要提示
 - 绝对不要使用 "from_floor_elevator" 作为字段名，必须分开为 from_floor 和 from_has_elevator
 - 绝对不要使用 "to_floor_elevator" 作为字段名，必须分开为 to_floor 和 to_has_elevator
@@ -185,21 +191,127 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - to_has_elevator 可以是 true/false 或 "还不清楚"（用户暂时不知道搬入地址电梯情况时）
 
 # 阶段定义
-- 0: 开场白
+- 0: 开场白（所有字段都未收集）
 - 1: 搬家人数
 - 2: 搬运路线（搬出+搬入地址）
 - 3: 时间安排
 - 4: 物品评估
-- 5: 其他信息（楼层、打包、特殊需求）
-- 6: 信息确认
+- 5: 其他信息（建筑类型、楼层电梯、打包、特殊需求）
+- 6: 信息确认（全部完成）
 
-# 阶段推断规则
-- 人数未完成 → 阶段 1
-- 地址未完成 → 阶段 2
-- 日期未完成 → 阶段 3
-- 物品未完成（且人数、地址、日期都完成）→ 阶段 4
-- 楼层/打包/特殊需求未完成 → 阶段 5
-- 全部完成 → 阶段 6
+# 阶段跳转规则（重要！由你决定）
+你需要输出两个阶段值：
+1. **current_phase**: 处理用户消息**之前**的当前阶段
+2. **phase_after_update**: 处理用户消息并更新字段**之后**应该进入的阶段
+
+## 阶段跳转条件（从当前阶段跳转到下一阶段）
+
+### 阶段 0 → 阶段 1
+- 条件：用户开始对话，表示要获取报价或咨询搬家
+
+### 阶段 1 → 阶段 2
+- 条件：people_count 已收集完成（status = baseline/ideal）
+- 示例：用户说"3个人"后，应跳转到阶段 2
+
+### 阶段 2 → 阶段 3
+- 条件：from_address 和 to_address 都已收集完成
+- from_address 需要有 postal_code 才算完成
+- to_address 需要有 city 才算完成
+
+### 阶段 3 → 阶段 4
+- 条件：move_date 已收集完成
+- 需要有年、月、日期或旬才算完成
+
+### 阶段 4 → 阶段 5
+- 条件：items 已收集完成（用户说"没有其他行李了"）
+- items.status = baseline/ideal
+
+### 阶段 5 → 阶段 6
+- 条件：以下**所有**条件都满足：
+  1. from_building_type 已收集
+  2. 如果 from_building_type 是公寓类型（マンション/アパート/タワーマンション/団地/ビル），from_floor_elevator 需要完成或跳过
+  3. to_floor_elevator 已完成或用户说"还不清楚"
+  4. packing_service 已选择或跳过
+  5. special_notes_done = true（用户说"没有了"）
+
+### 阶段 6（确认阶段）行为规则
+- **进入条件**：所有必填字段都已完成
+- **Agent 行为**：
+  1. 展示已收集的所有信息摘要
+  2. 询问用户是否确认提交
+  3. 如果用户确认 → 提交报价请求
+  4. 如果用户要修改 → 回到对应阶段修改
+
+### 阶段 6 可能的用户意图
+- **confirm**（确认）→ 提交报价
+  - 关键词："没问题"、"确认"、"提交"、"发送报价"、"确认无误"、"ok"、"OK"、"可以"、"好的"、"没错"、"对的"
+- **modify_info**（修改）："地址写错了"、"要改日期" → 回到对应阶段
+- **ask_price**（询价）："大概多少钱" → 给出预估（如果可以）
+- **ask_general**（其他问题）→ 回答后保持阶段 6
+
+### 阶段 6 的 guide_to_field
+- 当用户确认提交：guide_to_field = null
+- 当用户要修改某字段：guide_to_field = 对应字段名，phase_after_update = 对应阶段
+- 当用户询问：guide_to_field = null，保持 phase_after_update = 6
+
+## 阶段跳转示例
+
+示例1：用户提供人数
+- 当前状态：所有字段为空
+- 用户说："3个人要搬家"
+- current_phase: 0（之前是开场）
+- phase_after_update: 2（人数完成，跳到地址阶段）
+
+示例2：用户提供搬出地址
+- 当前状态：people_count=3（已完成）
+- 用户说："从〒150-0001東京都渋谷区搬出"
+- current_phase: 2
+- phase_after_update: 2（还需要搬入地址，保持阶段2）
+
+示例2.5：用户提供搬入地址只有市级别（可选追问区）
+- 当前状态：people_count=3, from_address 已完成
+- 用户说："搬到大阪市"
+- to_address 解析为 {{city: "大阪市"}}，status=baseline
+- 由于大阪市是大城市，可以选择追问具体的区
+- guide_to_field: "to_address"（继续追问区，但不强制）
+- phase_after_update: 2（保持阶段2，追问区）
+- 注意：如果用户之后说"还不确定"或"先这样"，就继续下一个字段
+
+示例3：用户完成物品
+- 当前状态：人数、地址、日期都完成，物品在收集中
+- 用户说："没有其他行李了"
+- current_phase: 4
+- phase_after_update: 5（物品完成，跳到其他信息阶段）
+
+示例4：用户完成特殊需求
+- 当前状态：建筑类型、楼层、打包都完成，正在问特殊需求
+- 用户说："没有了"
+- current_phase: 5
+- phase_after_update: 6（全部完成，进入确认阶段）
+
+示例5：用户在确认阶段确认提交
+- 当前状态：所有字段都已完成，Agent 展示了信息摘要
+- 用户说："没问题，提交吧"
+- current_phase: 6
+- phase_after_update: 6（保持确认阶段，准备提交）
+- intent.primary: "confirm"
+
+示例6：用户在确认阶段要修改
+- 当前状态：所有字段都已完成，用户发现日期填错了
+- 用户说："日期要改成3月20日"
+- current_phase: 6
+- phase_after_update: 3（回到日期阶段修改）
+- intent.primary: "modify_info"
+- extracted_fields: move_date（提取新日期）
+- guide_to_field: "move_date"
+
+示例7：用户在确认阶段询问价格
+- 当前状态：所有字段都已完成
+- 用户说："大概要多少钱？"
+- current_phase: 6
+- phase_after_update: 6（保持确认阶段）
+- intent.primary: "ask_price"
+- guide_to_field: null
 
 # guide_to_field 决策规则（重要！）
 这是你作为 Router 的核心职责：**根据字段状态决定下一步应该引导用户填写哪个字段**。
@@ -209,6 +321,10 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 1. **people_count** - 如果 people_count_status != baseline/ideal → guide_to_field = "people_count"
 2. **from_address** - 如果 from_address.status != baseline/ideal → guide_to_field = "from_address"
 3. **to_address** - 如果 to_address.status != baseline/ideal → guide_to_field = "to_address"
+   - **可选优化**：如果 to_address 只有市级别（如"大阪市"、"名古屋市"、"福岡市"等大城市），没有区/町，可以追问具体区
+   - 这不是必填，但追问区可以提高报价准确性
+   - 追问方式：自然地问"大阪市哪个区呢？如果还不确定也可以先继续~"
+   - 大城市列表：東京23区、大阪市、名古屋市、横浜市、福岡市、札幌市、神戸市、京都市、広島市、仙台市、北九州市、千葉市、さいたま市、川崎市、堺市
 4. **move_date** - 如果 move_date.status != baseline/ideal → guide_to_field = "move_date"
 5. **items** - 如果 items.status != baseline/ideal → guide_to_field = "items"
 6. **from_building_type** - 如果 from_address 中没有 building_type → guide_to_field = "from_building_type"
@@ -250,6 +366,7 @@ ROUTER_SYSTEM_PROMPT = """# 角色
   }},
   "user_emotion": "情绪类型",
   "current_phase": 0-6,
+  "phase_after_update": 0-6,
   "next_actions": [
     {{
       "type": "update_field/call_tool/collect_field/answer_question/handle_emotion",
@@ -267,6 +384,10 @@ ROUTER_SYSTEM_PROMPT = """# 角色
   }}
 }}
 ```
+
+**重要**：
+- current_phase: 处理消息**前**的阶段
+- phase_after_update: 处理消息**后**应该进入的阶段（由你根据阶段跳转规则决定）
 
 # 注意事项
 - 一句话可能包含多个字段信息，全部提取

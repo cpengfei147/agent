@@ -160,9 +160,10 @@ class OpenAIClient(LLMClient):
             if response_format:
                 kwargs["response_format"] = response_format
 
-            # Start Langfuse generation tracking
+            # Start Langfuse generation tracking (新版 API: start_observation)
             if langfuse and trace_name:
-                generation = langfuse.generation(
+                generation = langfuse.start_observation(
+                    as_type="generation",
                     name=trace_name,
                     model=self.model,
                     input=messages,
@@ -192,16 +193,17 @@ class OpenAIClient(LLMClient):
                     for tc in message.tool_calls
                 ]
 
-            # End Langfuse generation tracking
+            # End Langfuse generation tracking (新版 API: 先 update 再 end)
             if generation:
-                generation.end(
+                generation.update(
                     output=message.content,
-                    usage={
-                        "prompt_tokens": response.usage.prompt_tokens if response.usage else None,
-                        "completion_tokens": response.usage.completion_tokens if response.usage else None,
-                        "total_tokens": response.usage.total_tokens if response.usage else None
+                    usage_details={
+                        "input": response.usage.prompt_tokens if response.usage else 0,
+                        "output": response.usage.completion_tokens if response.usage else 0,
+                        "total": response.usage.total_tokens if response.usage else 0
                     }
                 )
+                generation.end()
                 langfuse.flush()
 
             return result
@@ -209,7 +211,8 @@ class OpenAIClient(LLMClient):
         except Exception as e:
             logger.error(f"OpenAI API error: {e}")
             if generation:
-                generation.end(output=None, level="ERROR", status_message=str(e))
+                generation.update(output=None, level="ERROR", status_message=str(e))
+                generation.end()
                 langfuse.flush()
             return {
                 "content": None,
