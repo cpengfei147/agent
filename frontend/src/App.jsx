@@ -214,17 +214,36 @@ function App() {
   const sendMessage = useCallback((content) => {
     if (!content?.trim() || !wsRef.current || !isConnected) return
 
+    // 检查是否是添加物品相关的消息（在物品阶段）
+    const addItemKeywords = ['继续添加', '添加物品', '再添加', '上传图片', '还有物品', '还要添加']
+    const isAddItemRequest = addItemKeywords.some(kw => content.includes(kw))
+
+    if (isAddItemRequest && currentPhase === 4) {
+      // 显示物品识别卡片
+      setUiComponent({ type: 'item_evaluation' })
+      setQuickOptions([])
+      setInputValue('')
+      return
+    }
+
     setMessages(prev => [...prev, { role: 'user', content, streaming: false }])
     wsRef.current.send(JSON.stringify({ type: 'message', content }))
     setInputValue('')
     setQuickOptions([]) // 发送消息后清空快捷选项
     setIsLoading(true)
-  }, [isConnected])
+  }, [isConnected, currentPhase])
 
   // 处理快捷选项点击
   const handleQuickOption = useCallback((option) => {
     // 检查是否是多选选项（阶段5特殊注意事项）
     const multiSelectOptions = ['有宜家家具', '有钢琴需要搬运', '空调安装', '空调拆卸', '不用品回收']
+
+    // 继续添加物品 - 重新显示物品识别卡片
+    if (option === '继续添加' || option === '上传照片') {
+      setUiComponent({ type: 'item_evaluation' })
+      setQuickOptions([])
+      return
+    }
 
     if (multiSelectOptions.includes(option)) {
       setSelectedOptions(prev => {
