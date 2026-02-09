@@ -62,6 +62,9 @@ function App() {
   const textQueueRef = useRef([])
   const isTypingRef = useRef(false)
 
+  // 是否刚点击过快捷选项（用于阻止重复弹出）
+  const justClickedOptionRef = useRef(false)
+
   // 多选状态（阶段5特殊注意事项）
   const [selectedOptions, setSelectedOptions] = useState([])
 
@@ -196,7 +199,11 @@ function App() {
       case MSG_TYPES.METADATA:
         if (data.current_phase !== undefined) setCurrentPhase(data.current_phase)
         if (data.fields_status) setFieldsStatus(data.fields_status)
-        if (data.quick_options) setQuickOptions(data.quick_options || [])
+        // 如果刚点击过快捷选项，不弹出新的选项
+        if (data.quick_options && !justClickedOptionRef.current) {
+          setQuickOptions(data.quick_options || [])
+        }
+        justClickedOptionRef.current = false // 重置标志
         if (data.ui_component) setUiComponent(data.ui_component)
         if (data.completion) setCompletion(data.completion)
         break
@@ -299,8 +306,10 @@ function App() {
         sendMessage(selectedOptions.join('、'))
         setSelectedOptions([])
       }
+      justClickedOptionRef.current = true // 标记刚点击过快捷选项
       sendMessage(option)
     } else {
+      justClickedOptionRef.current = true // 标记刚点击过快捷选项
       sendMessage(option)
     }
   }, [selectedOptions, sendMessage])
