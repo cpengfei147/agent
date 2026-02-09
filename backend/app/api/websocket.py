@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from app.storage.redis_client import get_redis
-from app.core import get_llm_client
+from app.core import get_llm_client, get_debug_tracer
 from app.models.fields import get_default_fields, Phase
 from app.agents.router import get_router_agent
 from app.agents.collector import get_collector_agent
@@ -17,6 +17,7 @@ from app.services.smart_options import get_smart_quick_options
 from app.models.schemas import AgentType
 from app.services.quote_service import QuoteService, SessionPersistenceService
 from app.services.item_service import get_item_service
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,10 @@ async def process_message(
     redis_client = await get_redis()
     router_agent = get_router_agent()
 
+    # Initialize debug tracer for this turn
+    tracer = get_debug_tracer(session["session_token"], enabled=True)
+    old_phase = session.get("current_phase", 0)
+
     # Get recent messages from cache
     cached_messages = await redis_client.get_messages(session["session_token"])
 
@@ -176,11 +181,20 @@ async def process_message(
         recent_messages=cached_messages[-10:]
     )
 
-    # Log routing decision
+    # Log routing decision with tracing
     agent_type = router_output.response_strategy.agent_type
+    tracer.log_router(
+        user_message=user_message,
+        fields_status=session["fields_status"],
+        intent=router_output.intent.primary.value,
+        extracted_fields=list(router_output.extracted_fields.keys()),
+        guide_to_field=router_output.response_strategy.guide_to_field,
+        emotion=router_output.user_emotion.value
+    )
     logger.info(f"Router decision: intent={router_output.intent.primary.value}, "
                 f"emotion={router_output.user_emotion.value}, "
-                f"agent_type={agent_type.value}")
+                f"agent_type={agent_type.value}, "
+                f"guide_to_field={router_output.response_strategy.guide_to_field}")
 
     # Step 2: Dispatch to appropriate specialist agent
     if agent_type == AgentType.COLLECTOR:
@@ -190,7 +204,9 @@ async def process_message(
             session=session,
             cached_messages=cached_messages,
             websocket=websocket,
-            redis_client=redis_client
+            redis_client=redis_client,
+            tracer=tracer,
+            old_phase=old_phase
         )
     elif agent_type == AgentType.ADVISOR:
         await process_with_advisor(
@@ -218,7 +234,9 @@ async def process_message(
             session=session,
             cached_messages=cached_messages,
             websocket=websocket,
-            redis_client=redis_client
+            redis_client=redis_client,
+            tracer=tracer,
+            old_phase=old_phase
         )
 
 
@@ -228,14 +246,22 @@ async def process_with_collector(
     session: dict,
     cached_messages: list,
     websocket: WebSocket,
-    redis_client
+    redis_client,
+    tracer=None,
+    old_phase: int = 0
 ):
     """Process message using Collector Agent with streaming"""
+    from app.core.tracing import DebugTracer
     collector_agent = get_collector_agent()
+
+    # Create tracer if not provided
+    if tracer is None:
+        tracer = DebugTracer(session["session_token"], enabled=True)
 
     full_response = ""
     updated_fields = session["fields_status"]
     quick_options = []
+    collector_metadata = {}
 
     # Stream response from collector
     async for chunk in collector_agent.stream_collect(
@@ -266,6 +292,7 @@ async def process_with_collector(
         elif chunk["type"] == "metadata":
             updated_fields = chunk["updated_fields"]
             quick_options = chunk.get("quick_options", [])
+            collector_metadata = chunk
 
         elif chunk["type"] == "error":
             await websocket.send_json({
@@ -293,10 +320,27 @@ async def process_with_collector(
     session["fields_status"] = updated_fields
     session["current_phase"] = current_phase.value
 
+    # Log Collector action with tracing
+    tracer.log_collector(
+        target_field=router_output.response_strategy.guide_to_field or "unknown",
+        next_field=collector_metadata.get("next_field", "unknown"),
+        decision_source="router" if router_output.response_strategy.guide_to_field else "fallback",
+        updated_fields=list(collector_metadata.get("validation_results", {}).keys())
+    )
+
+    # Log phase transition if changed
+    if current_phase.value != old_phase:
+        tracer.log_phase(
+            from_phase=old_phase,
+            to_phase=current_phase.value,
+            completion_rate=completion_info["completion_rate"],
+            missing_fields=completion_info["missing_fields"]
+        )
+
     # Determine UI component based on phase
     ui_component = get_ui_component_for_phase(current_phase, updated_fields)
 
-    # Send metadata
+    # Send metadata with enhanced debug info
     await websocket.send_json({
         "type": "metadata",
         "current_phase": current_phase.value,
@@ -316,7 +360,15 @@ async def process_with_collector(
                 "confidence": router_output.intent.confidence
             },
             "emotion": router_output.user_emotion.value,
-            "agent_type": router_output.response_strategy.agent_type.value
+            "agent_type": router_output.response_strategy.agent_type.value,
+            "guide_to_field": router_output.response_strategy.guide_to_field,
+            "extracted_fields": list(router_output.extracted_fields.keys())
+        },
+        "collector_debug": {
+            "next_field": collector_metadata.get("next_field"),
+            "sub_task": collector_metadata.get("sub_task"),
+            "needs_confirmation": collector_metadata.get("needs_confirmation"),
+            "validation_results": collector_metadata.get("validation_results", {})
         }
     })
 

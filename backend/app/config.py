@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Langfuse (可观测性)
+    langfuse_enabled: bool = False
+    langfuse_public_key: Optional[str] = None
+    langfuse_secret_key: Optional[str] = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

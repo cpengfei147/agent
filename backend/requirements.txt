@@ -5,6 +5,7 @@ websockets==12.0
 
 # LLM
 openai==1.12.0
+langfuse==2.56.1
 
 # Database
 sqlalchemy==2.0.25
