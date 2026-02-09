@@ -88,7 +88,12 @@ class CollectedFields(BaseModel):
 
     # Optional fields
     packing_service: Optional[str] = None
+    packing_service_status: FieldStatus = FieldStatus.NOT_COLLECTED
     special_notes: List[str] = []
+    special_notes_done: bool = False  # 用户点"没有了"才设为True
+
+    # 跳过字段复查标记
+    skipped_fields_reviewed: bool = False  # 进入阶段6前是否已复查过SKIPPED字段
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage"""

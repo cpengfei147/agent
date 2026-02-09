@@ -143,12 +143,17 @@ class CollectorAgent:
         updated_fields = fields_status.copy()
         validation_results = {}
 
+        # 调试：检查 Router 提取了哪些字段
+        logger.info(f"Router extracted fields: {list(router_output.extracted_fields.keys())}")
         for field_name, extracted in router_output.extracted_fields.items():
+            logger.info(f"Processing field {field_name}: raw={extracted.raw_value}, parsed={extracted.parsed_value}")
             result = await self._validate_field(field_name, extracted.parsed_value, updated_fields)
             validation_results[field_name] = result
+            logger.info(f"Validation result for {field_name}: valid={result.is_valid}, status={result.status}, parsed={result.parsed_value}")
 
             if result.is_valid:
                 updated_fields = self._update_field(updated_fields, field_name, result)
+                logger.info(f"Updated {field_name}: {updated_fields.get(field_name, updated_fields.get('from_address'))}")
 
                 # Yield validation result
                 yield {
@@ -157,6 +162,30 @@ class CollectorAgent:
                     "status": result.status,
                     "message": result.message
                 }
+
+        # 检查是否在复查阶段且用户仍然选择跳过
+        if target_field and target_field.startswith("review_"):
+            actual_field = target_field.replace("review_", "")
+            # 检查用户是否仍然表示不清楚
+            skip_keywords = ["不清楚", "不知道", "跳过", "还是不知道", "算了", "确认跳过"]
+            if any(kw in user_message for kw in skip_keywords):
+                # 用户确认跳过，标记复查完成
+                updated_fields["skipped_fields_reviewed"] = True
+                logger.info(f"User confirmed skip for {actual_field} during review, marking reviewed")
+            else:
+                # 用户提供了新的信息，更新字段
+                # 将提取的字段信息应用到实际字段
+                for field_name, extracted in router_output.extracted_fields.items():
+                    if field_name in [actual_field, f"{actual_field.replace('_floor_elevator', '')}_has_elevator"]:
+                        result = await self._validate_field(field_name, extracted.parsed_value, updated_fields)
+                        if result.is_valid:
+                            updated_fields = self._update_field(updated_fields, field_name, result)
+                            # 更新后检查是否还有其他跳过的字段
+                            from app.core.phase_inference import get_skipped_fields
+                            remaining_skipped = get_skipped_fields(updated_fields)
+                            if not remaining_skipped:
+                                updated_fields["skipped_fields_reviewed"] = True
+                                logger.info("All skipped fields resolved, marking reviewed")
 
         # Determine sub-task and next action
         # First check if any validated field needs verification - override target_field
@@ -198,6 +227,17 @@ class CollectorAgent:
             logger.info(f"Sub-task {sub_task} requires next_field={next_field}")
 
         needs_confirmation = self._check_completion(updated_fields)
+
+        # 调试日志：检查为什么跳过了 special_notes
+        from app.core.phase_inference import get_completion_info
+        debug_info = get_completion_info(updated_fields)
+        logger.info(f"Completion check: can_submit={debug_info['can_submit']}, "
+                   f"missing_fields={debug_info['missing_fields']}, "
+                   f"next_priority_field={debug_info['next_priority_field']}")
+        logger.info(f"special_notes_done={updated_fields.get('special_notes_done', False)}, "
+                   f"special_notes={updated_fields.get('special_notes', [])}")
+        logger.info(f"packing_service={updated_fields.get('packing_service')}, "
+                   f"packing_service_status={updated_fields.get('packing_service_status')}")
 
         # Build prompt
         style = router_output.response_strategy.style.value
@@ -246,11 +286,13 @@ class CollectorAgent:
                 }
                 return
 
-        # Get quick options from hardcoded logic
-        # If next_field changed, recalculate sub_task for correct options
-        if next_field and next_field != target_field:
-            sub_task = self._determine_sub_task(next_field, updated_fields, validation_results)
-        quick_options = self._get_quick_options(next_field, sub_task, updated_fields)
+        # Let LLM decide quick options based on context
+        from app.services.smart_options import get_smart_quick_options
+        quick_options = await get_smart_quick_options(
+            fields_status=updated_fields,
+            recent_messages=recent_messages + [{"role": "user", "content": user_message}],
+            next_field=next_field
+        )
 
         yield {
             "type": "metadata",
@@ -495,10 +537,36 @@ class CollectorAgent:
             if "from_floor_elevator" not in updated or not isinstance(updated["from_floor_elevator"], dict):
                 updated["from_floor_elevator"] = {}
             updated["from_floor_elevator"]["has_elevator"] = value
-            updated["from_floor_elevator"]["status"] = field_status
+            # 如果用户选择"跳过"或"不知道"，设置为 skipped
+            if value == "跳过" or value == "不知道" or value == "不清楚":
+                updated["from_floor_elevator"]["status"] = FieldStatus.SKIPPED.value
+            else:
+                updated["from_floor_elevator"]["status"] = field_status
+
+        elif field_name == "to_floor":
+            if "to_floor_elevator" not in updated or not isinstance(updated["to_floor_elevator"], dict):
+                updated["to_floor_elevator"] = {}
+            updated["to_floor_elevator"]["floor"] = value
+
+        elif field_name == "to_has_elevator":
+            if "to_floor_elevator" not in updated or not isinstance(updated["to_floor_elevator"], dict):
+                updated["to_floor_elevator"] = {}
+            updated["to_floor_elevator"]["has_elevator"] = value
+            # 如果用户选择"还不清楚"，设置为 skipped
+            if value == "还不清楚" or value == "不清楚":
+                updated["to_floor_elevator"]["status"] = FieldStatus.SKIPPED.value
+            else:
+                updated["to_floor_elevator"]["status"] = field_status
 
         elif field_name == "packing_service":
-            updated["packing_service"] = value
+            # 处理跳过情况
+            skip_keywords = ["不需要", "不用", "自己打包", "跳过", "没有"]
+            if value and any(kw in str(value) for kw in skip_keywords):
+                updated["packing_service"] = value
+                updated["packing_service_status"] = FieldStatus.SKIPPED.value
+            else:
+                updated["packing_service"] = value
+                updated["packing_service_status"] = field_status
 
         elif field_name == "items":
             if "items" not in updated or not isinstance(updated["items"], dict):
@@ -514,10 +582,20 @@ class CollectorAgent:
         elif field_name == "special_notes":
             if "special_notes" not in updated:
                 updated["special_notes"] = []
+
+            # 处理用户输入
             if isinstance(value, list):
-                updated["special_notes"].extend(value)
+                for v in value:
+                    if v == "没有了" or v == "没有其他":
+                        updated["special_notes_done"] = True
+                    elif v not in updated["special_notes"]:
+                        updated["special_notes"].append(v)
             else:
-                updated["special_notes"].append(value)
+                if value == "没有了" or value == "没有其他":
+                    updated["special_notes_done"] = True
+                elif value not in updated["special_notes"]:
+                    updated["special_notes"].append(value)
+
             # Remove duplicates while preserving order
             updated["special_notes"] = list(dict.fromkeys(updated["special_notes"]))
 
@@ -555,7 +633,11 @@ class CollectorAgent:
             if isinstance(to_addr, dict):
                 status = to_addr.get("status", "not_collected")
                 # If baseline but not ideal, encourage more detail (optional)
-                if status == "baseline" and not to_addr.get("district"):
+                # But only if the address value doesn't already contain a district (区)
+                addr_value = to_addr.get("value", "")
+                has_district_in_value = "区" in addr_value if addr_value else False
+
+                if status == "baseline" and not to_addr.get("district") and not has_district_in_value:
                     city = to_addr.get("city", "")
                     # Only ask for detail if it's a major city that has districts
                     major_cities = ["福岡市", "大阪市", "名古屋市", "横浜市", "札幌市", "神戸市",
@@ -602,6 +684,22 @@ class CollectorAgent:
                 if floor_info.get("has_elevator") is not None and not floor_info.get("floor"):
                     return "ask_floor"
 
+        elif target_field == "to_floor_elevator":
+            floor_info = fields_status.get("to_floor_elevator", {})
+            if isinstance(floor_info, dict):
+                if floor_info.get("floor") and floor_info.get("has_elevator") is None:
+                    return "ask_elevator"
+                if floor_info.get("has_elevator") is not None and not floor_info.get("floor"):
+                    return "ask_floor"
+
+        elif target_field == "special_notes":
+            # special_notes 是多选，直到用户点"没有了"才结束
+            return "ask_special_notes"
+
+        # 复查阶段（进入阶段6前再次询问之前跳过的字段）
+        elif target_field and target_field.startswith("review_"):
+            return "review_skipped"
+
         return None
 
     def _needs_more_info(
@@ -638,7 +736,11 @@ class CollectorAgent:
                 if status in incomplete_statuses:
                     return True
                 # Check if it's a major city without district - ask for more detail (optional)
-                if status == "baseline" and not to_addr.get("district"):
+                # But only if the address value doesn't already contain a district (区)
+                addr_value = to_addr.get("value", "")
+                has_district_in_value = "区" in addr_value if addr_value else False
+
+                if status == "baseline" and not to_addr.get("district") and not has_district_in_value:
                     city = to_addr.get("city", "")
                     major_cities = ["福岡市", "大阪市", "名古屋市", "横浜市", "札幌市", "神戸市",
                                    "京都市", "広島市", "仙台市", "北九州市", "千葉市", "さいたま市",
@@ -756,10 +858,20 @@ class CollectorAgent:
             return prompts["period_options"]
         elif sub_task == "ask_time_slot" and "time_options" in prompts:
             return prompts["time_options"]
-        elif sub_task == "ask_elevator" and "elevator_options" in prompts:
-            return prompts["elevator_options"]
+        elif sub_task == "ask_elevator":
+            # 对于 to_floor_elevator，使用它自己的选项（包含"还不清楚"）
+            if target_field == "to_floor_elevator":
+                to_prompts = get_field_collection_prompt("to_floor_elevator")
+                return to_prompts.get("elevator_options", ["有电梯", "无电梯", "还不清楚"])
+            elif "elevator_options" in prompts:
+                return prompts["elevator_options"]
         elif sub_task == "ask_more_items" and "more_options" in prompts:
             return prompts["more_options"]
+        elif sub_task == "ask_special_notes":
+            # 特殊注意事项 - 过滤掉已选择的选项
+            all_options = ["有宜家家具", "有钢琴需要搬运", "空调安装", "空调拆卸", "不用品回收", "没有了"]
+            selected = fields_status.get("special_notes", [])
+            return [opt for opt in all_options if opt not in selected]
         elif sub_task == "ask_district_optional":
             # Provide common districts for major cities
             to_addr = fields_status.get("to_address", {})
@@ -786,6 +898,11 @@ class CollectorAgent:
                 else:
                     # No items yet, show initial options
                     return prompts.get("options", ["Upload room photo", "Enter items directly", "Select from catalog"])
+
+        # 对于 to_floor_elevator，默认显示电梯选项（包含"还不清楚"）
+        if target_field == "to_floor_elevator" and not sub_task:
+            to_prompts = get_field_collection_prompt("to_floor_elevator")
+            return to_prompts.get("elevator_options", ["有电梯", "无电梯", "还不清楚"])
 
         if "options" in prompts:
             options = prompts["options"]

@@ -381,11 +381,20 @@ class FieldValidator:
 
         # Accept string as-is
         if isinstance(value, str):
+            value_str = value.strip()
+            # 处理 "还不清楚" 的情况 - 标记为 skipped
+            if value_str in ["还不清楚", "不清楚", "不确定"]:
+                return ValidationResult(
+                    is_valid=True,
+                    parsed_value=value_str,
+                    status="baseline",  # 将作为 skipped 处理
+                    message="电梯情况待定"
+                )
             return ValidationResult(
                 is_valid=True,
-                parsed_value=value,
+                parsed_value=value_str,
                 status="baseline",
-                message=f"电梯: {value}"
+                message=f"电梯: {value_str}"
             )
 
         return ValidationResult(

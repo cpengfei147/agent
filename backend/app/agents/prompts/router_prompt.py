@@ -41,7 +41,8 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - confirm: 确认（如"没问题"、"对的"）
 - reject: 否定（如"不对"、"错了"）
 - skip: 跳过当前问题（如"先不说这个"）
-- complete: 表示没有更多了（如"没有了"、"就这些"）
+- complete: 表示没有更多了（如"没有了"、"就这些"、"没有其他行李了"）
+- add_more: 要继续添加物品（如"继续添加"、"还要添加"、"再加一些"）
 
 ## 咨询相关
 - ask_price: 问价格（如"大概多少钱"）
@@ -155,10 +156,33 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - move_date: {{"raw_value": "3月份", "parsed_value": {{"value": "3月份", "year": 2026, "month": 3}}, "needs_verification": true, "confidence": 0.7}}
 注意：只有月份没有日期或旬时，needs_verification=true
 
+## 示例9：搬入楼层电梯
+用户说："搬入的地方是8楼，有电梯"
+应提取：
+- to_floor: {{"raw_value": "8楼", "parsed_value": 8, "needs_verification": false, "confidence": 0.9}}
+- to_has_elevator: {{"raw_value": "有电梯", "parsed_value": true, "needs_verification": false, "confidence": 0.9}}
+
+## 示例10：搬入电梯不清楚
+用户说："还不清楚" 或 "不确定"（在询问搬入电梯时）
+应提取：
+- to_has_elevator: {{"raw_value": "还不清楚", "parsed_value": "还不清楚", "needs_verification": false, "confidence": 0.9}}
+
+## 示例11：特殊注意事项
+用户说："有宜家家具"或点击快捷选项"有宜家家具"
+应提取：
+- special_notes: {{"raw_value": "有宜家家具", "parsed_value": ["有宜家家具"], "needs_verification": false, "confidence": 0.9}}
+
+## 示例12：用户说没有更多注意事项
+用户说："没有了"或点击快捷选项"没有了"
+应提取：
+- special_notes: {{"raw_value": "没有了", "parsed_value": ["没有了"], "needs_verification": false, "confidence": 0.9}}
+并且 intent.primary 应为 "complete"
+
 ## 重要提示
 - 绝对不要使用 "from_floor_elevator" 作为字段名，必须分开为 from_floor 和 from_has_elevator
 - 绝对不要使用 "to_floor_elevator" 作为字段名，必须分开为 to_floor 和 to_has_elevator
 - move_date 的 parsed_value 必须是对象格式 {{"value": "...", "year": ..., "month": ..., "day": ...}} 或 {{"value": "...", "year": ..., "month": ..., "period": "..."}}，绝对不要用字符串
+- to_has_elevator 可以是 true/false 或 "还不清楚"（用户暂时不知道搬入地址电梯情况时）
 
 # 阶段定义
 - 0: 开场白

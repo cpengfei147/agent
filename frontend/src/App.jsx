@@ -57,6 +57,7 @@ function App() {
   const [confirmedItems, setConfirmedItems] = useState([])
   const [isRecognizing, setIsRecognizing] = useState(false)
   const [recognitionStep, setRecognitionStep] = useState(0)
+  const [itemsJustConfirmed, setItemsJustConfirmed] = useState(false)  // 刚确认完成，卡片保留显示
 
   // 打字效果队列
   const textQueueRef = useRef([])
@@ -234,8 +235,8 @@ function App() {
         break
 
       case MSG_TYPES.ITEMS_CONFIRMED:
+        // 服务端确认物品（卡片已在 confirmItems 中嵌入消息流）
         setConfirmedItems(data.items || [])
-        setPendingItems([])
         break
 
       case MSG_TYPES.ERROR:
@@ -258,6 +259,7 @@ function App() {
     setQuickOptions([])
     setUiComponent({ type: 'none' })
     setSelectedOptions([])
+    setItemsJustConfirmed(false)
     textQueueRef.current = []
     isTypingRef.current = false
   }
@@ -295,6 +297,8 @@ function App() {
     if (option === '继续添加' || option === '上传照片') {
       setUiComponent({ type: 'item_evaluation' })
       setQuickOptions([])
+      setPendingItems([])  // 清空之前的待确认项
+      setItemsJustConfirmed(false)  // 重置确认状态
       return
     }
 
@@ -305,12 +309,14 @@ function App() {
         }
         return [...prev, option]
       })
-    } else if (option === '没有了' || option === '没有其他行李') {
+    } else if (option === '没有了' || option === '没有其他行李' || option === '没有其他行李了') {
       // 如果有已选项，先发送已选项
       if (selectedOptions.length > 0) {
         sendMessage(selectedOptions.join('、'))
         setSelectedOptions([])
       }
+      // 清除物品评估卡片状态
+      setUiComponent({ type: 'none' })
       sendMessage(option)
     } else {
       sendMessage(option)
@@ -340,7 +346,7 @@ function App() {
   // 确认隐私协议并上传
   const confirmPrivacyAndUpload = useCallback(async () => {
     setShowPrivacyModal(false)
-    setMessages(prev => [...prev, { role: 'user', content: '[上传图片]', streaming: false }])
+    // 不在对话中显示上传图片消息
     setIsRecognizing(true)
     setRecognitionStep(0)
 
@@ -371,15 +377,24 @@ function App() {
 
   // 确认物品
   const confirmItems = useCallback(() => {
-    setMessages(prev => [...prev, { role: 'user', content: '确认添加', streaming: false }])
-
     wsRef.current?.send(JSON.stringify({
       type: 'items_confirmed',
       items: pendingItems
     }))
 
+    // 将卡片作为特殊消息嵌入对话流
+    setMessages(prev => [...prev, {
+      role: 'assistant',
+      type: 'items_card',  // 特殊类型标记
+      items: [...pendingItems],
+      confirmed: true,
+      streaming: false
+    }])
+
     setConfirmedItems(prev => [...prev, ...pendingItems])
+    // 清除待确认状态，卡片已嵌入消息流
     setPendingItems([])
+    setItemsJustConfirmed(false)
   }, [pendingItems])
 
   // 删除物品
@@ -472,19 +487,77 @@ function App() {
   }
 
   // 渲染消息气泡
-  const renderMessage = (msg, index) => (
-    <div key={index} className={`message-wrapper ${msg.role}`}>
-      {msg.role === 'assistant' && (
-        <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
-      )}
-      <div className={`message-bubble ${msg.role}`}>
-        <div className="message-content">
-          {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
+  const renderMessage = (msg, index) => {
+    // 特殊处理：嵌入式物品卡片
+    if (msg.type === 'items_card') {
+      return renderEmbeddedItemsCard(msg.items, index)
+    }
+
+    return (
+      <div key={index} className={`message-wrapper ${msg.role}`}>
+        {msg.role === 'assistant' && (
+          <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
+        )}
+        <div className={`message-bubble ${msg.role}`}>
+          <div className="message-content">
+            {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
+          </div>
+          {msg.streaming && <LoadingOutlined style={{ marginLeft: 8 }} />}
         </div>
-        {msg.streaming && <LoadingOutlined style={{ marginLeft: 8 }} />}
       </div>
-    </div>
-  )
+    )
+  }
+
+  // 渲染嵌入式物品卡片（已确认，嵌入对话流）
+  const renderEmbeddedItemsCard = (items, index) => {
+    const groupedItems = items.reduce((acc, item) => {
+      const cat = item.category || '其他'
+      if (!acc[cat]) acc[cat] = []
+      acc[cat].push(item)
+      return acc
+    }, {})
+
+    const totalCount = items.reduce((sum, i) => sum + (i.count || 1), 0)
+    const nonBoxCount = items.filter(i => i.category !== 'ダンボール').length
+    const boxItem = items.find(i => i.category === 'ダンボール')
+
+    return (
+      <div key={index} className="message-wrapper assistant">
+        <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
+        <Card className="ui-card recognition-result">
+          <div className="result-header">
+            <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 20, marginRight: 8 }} />
+            <span style={{ color: '#22c55e', fontWeight: 600 }}>识别完成</span>
+          </div>
+          <p>共新识别出 {nonBoxCount} 件行李物品，另需 {boxItem?.count || 0} 个 L 标准纸箱</p>
+
+          <List
+            className="item-list"
+            dataSource={Object.entries(groupedItems)}
+            renderItem={([category, catItems]) => (
+              <div key={category}>
+                <div className="item-category">{category}</div>
+                {catItems.map(item => (
+                  <div key={item.id} className="item-row">
+                    <div className="item-info">
+                      <span className="item-name">{item.name_ja || item.name}</span>
+                      {item.note && <span className="item-note">{item.note}</span>}
+                    </div>
+                    <Tag color="blue">×{item.count || 1}</Tag>
+                  </div>
+                ))}
+              </div>
+            )}
+          />
+
+          <Button type="primary" block disabled style={{ marginTop: 16, backgroundColor: '#52c41a', borderColor: '#52c41a' }}>
+            <CheckCircleOutlined /> 已添加（{totalCount}件）
+          </Button>
+          <p className="hint">添加后您可以继续拍照/从目录中添加行李</p>
+        </Card>
+      </div>
+    )
+  }
 
   // 渲染物品评估卡片
   const renderItemEvalCard = () => (
@@ -838,6 +911,7 @@ function App() {
           </div>
         )}
 
+        {/* 待确认的物品卡片（确认后会嵌入消息流，这里只显示未确认的） */}
         {pendingItems.length > 0 && !isRecognizing && (
           <div className="message-wrapper assistant">
             <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
@@ -852,8 +926,8 @@ function App() {
           </div>
         )}
 
-        {/* Quick Options - 在聊天流中 */}
-        {renderQuickOptions()}
+        {/* Quick Options - 在聊天流中 (物品识别进行中或待确认时不显示) */}
+        {!pendingItems.length && !isRecognizing && renderQuickOptions()}
 
         <div ref={chatEndRef} />
       </Content>
@@ -918,9 +992,72 @@ function App() {
               size="small"
               dataSource={[
                 { label: '搬家人数', value: fieldsStatus.people_count?.value || fieldsStatus.people_count, icon: <UserOutlined /> },
-                { label: '搬出地址', value: fieldsStatus.from_address?.value || fieldsStatus.from_address, icon: <EnvironmentOutlined /> },
-                { label: '搬入地址', value: fieldsStatus.to_address?.value || fieldsStatus.to_address, icon: <EnvironmentOutlined /> },
-                { label: '搬家日期', value: fieldsStatus.moving_date?.value || fieldsStatus.moving_date, icon: <CalendarOutlined /> },
+                {
+                  label: '搬出地址',
+                  value: (() => {
+                    const addr = fieldsStatus.from_address
+                    if (!addr) return null
+                    let display = addr.value || ''
+                    if (addr.postal_code) display = `〒${addr.postal_code} ${display}`.trim()
+                    if (addr.building_type) display += ` (${addr.building_type})`
+                    return display || null
+                  })(),
+                  icon: <EnvironmentOutlined />
+                },
+                {
+                  label: '搬入地址',
+                  value: (() => {
+                    const addr = fieldsStatus.to_address
+                    if (!addr) return null
+                    let display = addr.value || ''
+                    if (addr.building_type) display += ` (${addr.building_type})`
+                    return display || null
+                  })(),
+                  icon: <EnvironmentOutlined />
+                },
+                {
+                  label: '搬家日期',
+                  value: (() => {
+                    const date = fieldsStatus.move_date
+                    if (!date) return null
+                    let display = date.value || ''
+                    if (date.time_slot) display += ` ${date.time_slot}`
+                    return display || null
+                  })(),
+                  icon: <CalendarOutlined />
+                },
+                {
+                  label: '搬出楼层',
+                  value: (() => {
+                    const floor = fieldsStatus.from_floor_elevator
+                    if (!floor || !floor.floor) return null
+                    let display = `${floor.floor}楼`
+                    if (floor.has_elevator === true) display += '（有电梯）'
+                    else if (floor.has_elevator === false) display += '（无电梯）'
+                    else if (floor.has_elevator) display += `（${floor.has_elevator}）`
+                    return display
+                  })(),
+                  icon: <HomeOutlined />
+                },
+                {
+                  label: '搬入楼层',
+                  value: (() => {
+                    const floor = fieldsStatus.to_floor_elevator
+                    if (!floor || !floor.floor) return null
+                    let display = `${floor.floor}楼`
+                    if (floor.has_elevator === true) display += '（有电梯）'
+                    else if (floor.has_elevator === false) display += '（无电梯）'
+                    else if (floor.has_elevator) display += `（${floor.has_elevator}）`
+                    return display
+                  })(),
+                  icon: <HomeOutlined />
+                },
+                { label: '打包服务', value: fieldsStatus.packing_service, icon: <InboxOutlined /> },
+                {
+                  label: '特殊注意',
+                  value: fieldsStatus.special_notes?.length > 0 ? fieldsStatus.special_notes.join('、') : null,
+                  icon: <InboxOutlined />
+                },
               ].filter(item => item.value)}
               renderItem={item => (
                 <List.Item>
@@ -958,9 +1095,9 @@ function App() {
           <div style={{ marginTop: 16, padding: '12px', background: '#f5f5f5', borderRadius: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
               <span>收集进度</span>
-              <span>{Math.round(completion.completion_rate || 0)}%</span>
+              <span>{Math.round((completion.completion_rate || 0) * 100)}%</span>
             </div>
-            <Progress percent={Math.round(completion.completion_rate || 0)} strokeColor="#6366f1" />
+            <Progress percent={Math.round((completion.completion_rate || 0) * 100)} strokeColor="#6366f1" />
           </div>
         </div>
       </Modal>

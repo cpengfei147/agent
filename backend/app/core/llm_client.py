@@ -45,7 +45,8 @@ class OpenAIClient(LLMClient):
         self,
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]] = None,
-        stream: bool = True
+        stream: bool = True,
+        temperature: float = 0.85
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Send streaming chat request"""
         try:
@@ -53,6 +54,7 @@ class OpenAIClient(LLMClient):
                 "model": self.model,
                 "messages": messages,
                 "stream": stream,
+                "temperature": temperature,  # 添加温度参数让回复更多样化
             }
             if tools:
                 kwargs["tools"] = tools
@@ -117,13 +119,15 @@ class OpenAIClient(LLMClient):
         self,
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]] = None,
-        response_format: Dict[str, Any] = None
+        response_format: Dict[str, Any] = None,
+        temperature: float = 0.7
     ) -> Dict[str, Any]:
         """Send non-streaming chat request"""
         try:
             kwargs = {
                 "model": self.model,
                 "messages": messages,
+                "temperature": temperature,  # 添加温度参数让回复更多样化
             }
             if tools:
                 kwargs["tools"] = tools

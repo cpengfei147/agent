@@ -22,6 +22,12 @@ from app.agents.prompts.companion_prompt import (
     detect_chitchat_type,
     EMOTION_STRATEGIES
 )
+from app.agents.prompts.persona import (
+    ERABU_PERSONA,
+    PERSONA_INJECTION,
+    VARIETY_INSTRUCTION,
+    EXAMPLE_PHRASES
+)
 
 __all__ = [
     # Router
@@ -41,5 +47,10 @@ __all__ = [
     "build_companion_prompt",
     "get_chitchat_response",
     "detect_chitchat_type",
-    "EMOTION_STRATEGIES"
+    "EMOTION_STRATEGIES",
+    # Persona
+    "ERABU_PERSONA",
+    "PERSONA_INJECTION",
+    "VARIETY_INSTRUCTION",
+    "EXAMPLE_PHRASES"
 ]

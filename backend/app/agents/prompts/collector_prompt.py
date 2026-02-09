@@ -1,77 +1,92 @@
 """Collector Agent Prompt Templates"""
 
 from typing import Dict, Any, Optional, List
+from app.agents.prompts.persona import PERSONA_INJECTION, VARIETY_INSTRUCTION
 
-# Field-specific collection prompts
+# Field-specific collection prompts (作为参考，LLM会自主生成自然的问法)
 FIELD_COLLECTION_PROMPTS = {
     "people_count": {
-        "ask": "请问是几个人搬家呢？单身、小家庭还是大家族？",
+        "goal": "询问搬家人数",
         "ask_options": ["单身", "2~3人", "4人以上"],
-        "clarify_range": "您说的是{low}到{high}人呢，请问具体是几位呢？方便我们准备合适的车辆~",
-        "confirm": "好的，{value}人搬家，记下来了！"
+        "note": "如果用户说范围如2-3人，确认具体数字"
     },
     "from_address": {
-        "ask": "请问您是从哪里搬出呢？搬到哪里去呢？",
-        "ask_postal": "方便告诉我搬出地址的邮编吗？这样能更准确地帮您计算距离和报价哦~",
-        "ask_building_type": "请问搬出的地方是什么类型的建筑呢？",
-        "building_options": ["マンション", "アパート", "戸建て", "その他"],
-        "confirm": "好的，从{value}搬出，记下来了！"
+        "goal": "询问搬出地址，最好能获取邮编",
+        "ask_postal": "询问邮编以便准确计算",
+        "ask_building_type": "询问建筑类型",
+        "building_options": ["マンション", "アパート", "戸建て", "その他"]
     },
     "to_address": {
-        "ask": "请问您要搬到哪里呢？知道大概的城市或区就可以~",
-        "ask_city": "请问搬入地址在哪个城市/区呢？",
-        "ask_district_optional": "如果方便的话，可以告诉我更详细的区或地址吗？这样报价会更准确哦~ 当然，如果暂时不确定也没关系，我们可以先继续其他的~",
-        "ask_building_type": "请问搬入的地方是什么类型的建筑呢？",
-        "confirm": "好的，搬到{value}，记下来了！"
+        "goal": "询问搬入地址，至少需要城市/区",
+        "ask_city": "询问城市或区",
+        "ask_district_optional": "可选择性询问更详细的地址",
+        "ask_building_type": "询问建筑类型"
     },
     "move_date": {
-        "ask": "请问您计划什么时候搬家呢？",
+        "goal": "询问搬家日期",
         "ask_options": ["这个月", "下个月", "再下个月"],
-        "ask_specific": "请问是{month}月的上旬、中旬还是下旬呢？或者有具体日期吗？",
-        "ask_period": "请问是上旬、中旬还是下旬呢？或者有具体日期吗？这样我们可以更准确地为您安排。",
-        "ask_time_slot": "请问希望上午还是下午搬家呢？",
+        "ask_period": "如果只有月份，需要问是上旬/中旬/下旬",
+        "ask_time_slot": "日期确定后可以问时间段",
         "period_options": ["上旬", "中旬", "下旬"],
-        "time_options": ["上午", "下午", "没有指定时段"],
-        "confirm": "好的，搬家时间是{value}。"
+        "time_options": ["上午", "下午", "没有指定时段"]
     },
     "items": {
-        "ask": "接下来我们来确认需要搬运的物品。您可以通过以下方式告诉我：\n1. 上传房间照片，我来帮您识别\n2. 直接告诉我有哪些大件家具家电\n3. 从物品目录中选择",
-        "ask_simple": "请问有哪些大件物品需要搬运呢？比如冰箱、洗衣机、沙发等。",
-        "ask_more": "还有其他需要搬运的大件物品吗？",
-        "more_options": ["继续添加", "上传照片", "没有其他行李"],
+        "goal": "收集需要搬运的物品",
+        "methods": ["上传照片识别", "直接输入", "从目录选择"],
+        "ask_more": "询问是否还有其他物品",
+        "more_options": ["继续添加", "没有其他行李了"],
         "options": ["上传房间照片", "直接输入物品", "从目录选择"],
-        "confirm": "好的，已记录{count}件物品。",
-        "image_prompt": "请上传房间照片，我会帮您识别其中的家具和家电。"
+        "note": "物品确认后要友好过渡到下一阶段"
+    },
+    "from_building_type": {
+        "goal": "询问搬出地址的建筑类型",
+        "options": ["マンション", "アパート", "戸建て", "その他"],
+        "note": "物品收集完后第一个问题"
     },
     "from_floor_elevator": {
-        "ask": "请问您现在住在几楼？有电梯吗？",
-        "ask_floor": "请问是几楼呢？",
-        "ask_elevator": "请问有电梯吗？",
-        "elevator_options": ["有电梯", "无电梯"],
-        "confirm": "好的，{floor}楼，{elevator}。"
+        "goal": "询问搬出地址的楼层和电梯情况",
+        "elevator_options": ["有电梯", "无电梯", "跳过"],
+        "note": "所有建筑类型都要询问，用户可以选择跳过"
+    },
+    "to_floor_elevator": {
+        "goal": "询问搬入地址的楼层和电梯情况",
+        "elevator_options": ["有电梯", "无电梯", "还不清楚"],
+        "note": "非必填，用户不确定可以跳过"
     },
     "packing_service": {
-        "ask": "请问打包工作是需要搬家公司帮忙，还是自己打包呢？",
+        "goal": "询问打包服务需求",
         "options": ["全部请公司打包", "自己打包"],
-        "confirm": "好的，{value}。"
+        "note": "询问是公司打包还是自己打包"
     },
     "special_notes": {
-        "ask": "请问有什么特殊情况或注意事项需要告知搬家公司吗？",
+        "goal": "询问特殊物品或服务需求",
         "options": ["有宜家家具", "有钢琴需要搬运", "空调安装", "空调拆卸", "不用品回收", "没有了"],
-        "ask_more": "还有其他需要特别注意的吗？",
-        "confirm": "好的，已记录特殊注意事项。"
+        "note": "多选，用户说没有了才结束"
+    },
+    # 复查阶段 - 进入阶段6前再次询问之前跳过的字段
+    "review_from_floor_elevator": {
+        "goal": "在最终确认前，再次询问之前跳过的搬出楼层电梯信息",
+        "elevator_options": ["有电梯", "无电梯", "确认跳过"],
+        "note": "提醒用户之前选择了跳过，问是否现在可以提供。如果还是不清楚就不强求"
+    },
+    "review_to_floor_elevator": {
+        "goal": "在最终确认前，再次询问之前跳过的搬入楼层电梯信息",
+        "elevator_options": ["有电梯", "无电梯", "确认跳过"],
+        "note": "提醒用户之前选择了跳过，问是否现在可以提供。如果还是不清楚就不强求"
+    },
+    "review_packing_service": {
+        "goal": "在最终确认前，再次询问之前跳过的打包服务需求",
+        "options": ["全部请公司打包", "自己打包", "确认跳过"],
+        "note": "提醒用户之前选择了跳过，问是否现在可以提供。如果还是不清楚就不强求"
     }
 }
 
 # Collector system prompt template
-COLLECTOR_SYSTEM_PROMPT = """# 角色
-你是 ERABU 的搬家顾问小E，专业、耐心、温暖的搬家服务专家。
+COLLECTOR_SYSTEM_PROMPT = """
+{persona}
 
-# 人设特点
-- 专业可靠：对搬家流程了如指掌
-- 耐心细致：一步步引导用户
-- 温暖贴心：用温暖的语气陪伴用户
-- 高效有序：根据用户节奏调整
+# 当前任务：信息收集
+作为 ERABU，你现在在帮用户收集搬家信息来获取报价。
 
 # 当前时间
 {current_time}
@@ -89,9 +104,12 @@ COLLECTOR_SYSTEM_PROMPT = """# 角色
 
 # 收集原则
 1. 按优先级收集信息：人数 → 地址 → 日期 → 物品 → 其他
-2. 用户提供信息后，确认并继续下一个问题
+2. 用户提供信息后，简单确认并自然过渡到下一个问题
 3. 不重复询问已收集的信息
-4. 回复简洁，1-2句话
+4. 回复简洁自然，1-2句话
+5. **每次只问一个问题**，不要一次列出多个问题
+6. **重要：每次回复的措辞要有变化**，不要每次都用一样的开场白或问法
+7. 可以适当使用语气词（呢、哦、吧、~）让对话更自然
 
 # 字段收集指南
 {field_guide}
@@ -102,6 +120,21 @@ COLLECTOR_SYSTEM_PROMPT = """# 角色
 # 验证规则
 {validation_rules}
 
+{variety_instruction}
+
+# 示例（同一个场景的不同回复方式，体现 ERABU 风格）
+询问人数：
+- "这次搬家几个人呀？"
+- "话说是自己一个人搬还是几个人一起？"
+- "说实话人数会影响报价，方便告诉我几个人搬吗？"
+- "一个人搬还是有家人一起？"
+
+确认信息（xxx代表用户说的内容）：
+- "OK，xxx对吧，收到~"
+- "了解了解，xxx没问题"
+- "行，xxx记下来了"
+- "嗯嗯，xxx这个我记住了"
+
 """
 
 # Validation rules by field
@@ -111,9 +144,11 @@ VALIDATION_RULES = {
     "to_address": "搬入地址至少需要知道城市/区级别。",
     "move_date": "日期需要包含年、月、以及旬或具体日期。「来月」需要结合当前时间解析。",
     "items": "至少需要1件物品才能继续。用户可以通过上传照片、直接输入或从目录选择来添加物品。大件家具家电包括：床、沙发、桌子、柜子、冰箱、洗衣机、电视、空调等。",
+    "from_building_type": "搬出地址的建筑类型：マンション、アパート、戸建て、その他。这会影响后续楼层和电梯信息的收集。",
     "from_floor_elevator": "公寓类建筑（マンション、アパート等）必须询问楼层和电梯情况。",
-    "packing_service": "确认是公司打包还是自己打包。",
-    "special_notes": "主动询问特殊情况：宜家家具、钢琴、空调、不用品回收等。"
+    "to_floor_elevator": "搬入地址的楼层和电梯情况。这是非必填项，如果用户不清楚可以选择「还不清楚」跳过。",
+    "packing_service": "确认是公司打包还是自己打包。用户可以选择跳过。",
+    "special_notes": "主动询问特殊情况：宜家家具、钢琴、空调、不用品回收等。用户点击「没有了」表示完成。"
 }
 
 
@@ -137,7 +172,9 @@ def format_collection_task(
         "to_address": "收集搬入地址",
         "move_date": "收集搬家日期",
         "items": "收集搬运物品清单",
-        "from_floor_elevator": "收集楼层和电梯信息",
+        "from_building_type": "收集搬出地址建筑类型",
+        "from_floor_elevator": "收集搬出地址楼层和电梯信息",
+        "to_floor_elevator": "收集搬入地址楼层和电梯信息",
         "packing_service": "确认打包服务需求",
         "special_notes": "收集特殊注意事项"
     }
@@ -235,37 +272,63 @@ def format_field_guide(target_field: str, fields_status: Dict[str, Any]) -> str:
         if isinstance(items, dict) and items.get("list"):
             count = len(items["list"])
             item_names = [item.get("name_ja", item.get("name", "item")) for item in items["list"][:5]]
-            guide_parts.append(f"- Already recorded {count} items: {', '.join(item_names)}")
-            guide_parts.append("- Ask if there are other items")
-            guide_parts.append("- Options: continue adding / upload photo / no more items")
+            guide_parts.append(f"- 已记录 {count} 件物品: {', '.join(item_names)}")
+            guide_parts.append("- 询问是否还有其他物品")
+            guide_parts.append("- 选项：继续添加 / 上传照片 / 没有其他行李")
+            guide_parts.append("- 如果用户确认完成，用友好的语气过渡到下一阶段")
         else:
-            guide_parts.append("- Start collecting items for moving")
-            guide_parts.append("- Provide three ways: upload photo, enter directly, or select from catalog")
-            guide_parts.append("- Examples of large items: fridge, washing machine, sofa, bed, TV, desk, etc.")
-            guide_parts.append("- UI shows item_evaluation component for user to interact with")
+            guide_parts.append("- 开始收集搬运物品")
+            guide_parts.append("- 提供三种方式：上传照片、直接输入、从目录选择")
+            guide_parts.append("- 大件物品举例：冰箱、洗衣机、沙发、床、电视、桌子等")
+            guide_parts.append("- UI会显示物品评估组件供用户操作")
+
+    elif target_field == "from_building_type":
+        # 检查是否刚从物品收集阶段过渡来
+        items = fields_status.get("items", {})
+        items_done = isinstance(items, dict) and items.get("status") in ["baseline", "ideal"]
+        if items_done:
+            guide_parts.append("- 【阶段过渡】刚完成物品收集，用友好的过渡语引出下一个问题")
+        guide_parts.append("- 只问搬出地址的建筑类型这一个问题")
+        guide_parts.append("- **重要：不要同时问楼层、电梯或其他信息**")
+        guide_parts.append("- 选项：マンション / アパート / 戸建て / その他")
 
     elif target_field == "from_floor_elevator":
         floor_info = fields_status.get("from_floor_elevator", {})
+        guide_parts.append("- 只问搬出地址的楼层和电梯情况")
+        guide_parts.append("- **重要：不要同时问搬入地址的信息，那是下一步的事**")
         if isinstance(floor_info, dict):
             if floor_info.get("floor") and floor_info.get("has_elevator") is None:
-                guide_parts.append("- 已知楼层，询问是否有电梯")
+                guide_parts.append("- 已知楼层，只需询问是否有电梯")
             elif floor_info.get("has_elevator") is not None and not floor_info.get("floor"):
-                guide_parts.append("- 已知电梯情况，询问楼层")
+                guide_parts.append("- 已知电梯情况，只需询问楼层")
             else:
-                guide_parts.append("- 询问楼层和电梯情况")
-        else:
-            guide_parts.append("- 询问楼层和电梯情况")
+                guide_parts.append("- 询问搬出地址的楼层和电梯")
+
+    elif target_field == "to_floor_elevator":
+        floor_info = fields_status.get("to_floor_elevator", {})
+        guide_parts.append("- 只问搬入地址的楼层和电梯情况")
+        guide_parts.append("- **重要：不要回顾或重复问搬出地址的信息**")
+        guide_parts.append("- 这是非必填项，如果用户不清楚可以选「还不清楚」跳过")
+        if isinstance(floor_info, dict):
+            if floor_info.get("floor") and floor_info.get("has_elevator") is None:
+                guide_parts.append("- 已知搬入楼层，只需询问是否有电梯")
+            elif floor_info.get("has_elevator") is not None and not floor_info.get("floor"):
+                guide_parts.append("- 已知电梯情况，只需询问搬入楼层")
 
     elif target_field == "packing_service":
-        guide_parts.append("- 询问打包服务需求")
+        guide_parts.append("- 只问打包服务需求这一个问题")
+        guide_parts.append("- **重要：不要同时问其他信息**")
         guide_parts.append("- 选项：全部请公司打包 / 自己打包")
 
     elif target_field == "special_notes":
         notes = fields_status.get("special_notes", [])
         if notes:
             guide_parts.append(f"- 已记录: {', '.join(notes)}")
-        guide_parts.append("- 询问是否有特殊注意事项")
-        guide_parts.append("- 提示：宜家家具、钢琴、空调安装/拆卸、不用品回收")
+            guide_parts.append("- 询问还有没有其他需要注意的")
+        else:
+            guide_parts.append("- 询问是否有特殊注意事项")
+            guide_parts.append("- 可选项：宜家家具、钢琴、空调安装/拆卸、不用品回收")
+        guide_parts.append("- **重要：只问这一个问题，不要列出其他问题**")
 
     return "\n".join(guide_parts) if guide_parts else "继续收集信息"
 
@@ -320,30 +383,33 @@ def build_collector_prompt(
             simplified_fields[key] = value
 
     return COLLECTOR_SYSTEM_PROMPT.format(
+        persona=PERSONA_INJECTION,
         current_time=datetime.now().strftime("%Y年%m月%d日 %H:%M"),
         collection_task=format_collection_task(target_field, sub_task, context),
         fields_status=json.dumps(simplified_fields, ensure_ascii=False, indent=2),
         recent_messages=formatted_messages,
         field_guide=format_field_guide(target_field, fields_status),
         style_instruction=format_style_instruction(style),
-        validation_rules=VALIDATION_RULES.get(target_field, "确保信息准确完整")
+        validation_rules=VALIDATION_RULES.get(target_field, "确保信息准确完整"),
+        variety_instruction=VARIETY_INSTRUCTION
     )
 
 
 # Confirmation prompt template
-CONFIRMATION_PROMPT = """# 角色
-你是 ERABU 的信息确认专家，负责向用户确认收集到的信息。
+CONFIRMATION_PROMPT = """
+{persona}
+
+# 当前任务：信息确认
+作为 ERABU，你现在要帮用户确认收集到的信息，准备获取报价。
 
 # 已收集信息摘要
 {summary}
 
-# 任务
-请用自然、友好的语气向用户确认以上信息是否正确。
-
 # 输出要求
-1. 用简洁的方式列出关键信息
-2. 询问用户是否需要修改
-3. 如果都正确，询问是否可以发送报价请求
+1. 用 ERABU 的风格（轻松、幽默）列出关键信息
+2. 询问用户是否需要修改，可以说"有啥要改的吗？"这种
+3. 如果都正确，用轻松的语气确认是否发送报价请求
+4. 不要太正式，像朋友帮忙核对信息一样
 """
 
 
@@ -386,12 +452,24 @@ def build_confirmation_prompt(fields_status: Dict[str, Any]) -> str:
             items_str += f" 等{len(items['list'])}件"
         summary_parts.append(f"- 搬运物品：{items_str}")
 
-    # Floor/elevator
+    # From Floor/elevator
     floor_info = fields_status.get("from_floor_elevator", {})
     if isinstance(floor_info, dict):
         if floor_info.get("floor"):
             elevator_str = "有电梯" if floor_info.get("has_elevator") else "无电梯"
-            summary_parts.append(f"- 楼层情况：{floor_info['floor']}楼，{elevator_str}")
+            summary_parts.append(f"- 搬出楼层：{floor_info['floor']}楼，{elevator_str}")
+
+    # To Floor/elevator
+    to_floor_info = fields_status.get("to_floor_elevator", {})
+    if isinstance(to_floor_info, dict):
+        if to_floor_info.get("floor"):
+            if to_floor_info.get("has_elevator") == "还不清楚":
+                elevator_str = "电梯情况待定"
+            elif to_floor_info.get("has_elevator"):
+                elevator_str = "有电梯" if to_floor_info.get("has_elevator") == True or to_floor_info.get("has_elevator") == "有电梯" else "无电梯"
+            else:
+                elevator_str = "电梯情况待定"
+            summary_parts.append(f"- 搬入楼层：{to_floor_info['floor']}楼，{elevator_str}")
 
     # Packing
     packing = fields_status.get("packing_service")
@@ -405,4 +483,7 @@ def build_confirmation_prompt(fields_status: Dict[str, Any]) -> str:
 
     summary = "\n".join(summary_parts) if summary_parts else "暂无信息"
 
-    return CONFIRMATION_PROMPT.format(summary=summary)
+    return CONFIRMATION_PROMPT.format(
+        persona=PERSONA_INJECTION,
+        summary=summary
+    )

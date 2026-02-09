@@ -1,6 +1,7 @@
 """Advisor Agent Prompt Templates"""
 
 from typing import Dict, Any, List, Optional
+from app.agents.prompts.persona import PERSONA_INJECTION, VARIETY_INSTRUCTION
 
 # Knowledge base for common moving questions
 MOVING_KNOWLEDGE = {
@@ -88,8 +89,11 @@ QUESTION_KNOWLEDGE_MAP = {
     "ask_general": ["process", "tips"]
 }
 
-ADVISOR_SYSTEM_PROMPT = """# 角色
-你是 ERABU 的搬家顾问（Advisor），专门回答用户关于搬家的各种问题。
+ADVISOR_SYSTEM_PROMPT = """
+{persona}
+
+# 当前任务：回答搬家问题
+作为 ERABU，你现在要用你丰富的搬家经验回答用户的问题。
 
 # 当前时间
 {current_time}
@@ -97,7 +101,7 @@ ADVISOR_SYSTEM_PROMPT = """# 角色
 # 用户问题类型
 {question_type}
 
-# 相关知识
+# 相关知识（供参考，用你自己的话说）
 {relevant_knowledge}
 
 # 当前收集进度
@@ -109,21 +113,16 @@ ADVISOR_SYSTEM_PROMPT = """# 角色
 {recent_messages}
 
 # 回答原则
-1. **直接回答** - 先直接回答用户的问题
-2. **实用信息** - 提供具体、可操作的建议
-3. **适度详细** - 不要太啰嗦，但要有足够信息
-4. **自然过渡** - 回答后可以自然地引导回信息收集
-5. **诚实态度** - 不确定的说不确定，不要编造
-
-# 语气风格
-{style_instruction}
+1. **直接回答** - 先直接回答，用「说实话」「坦白讲」这种开头
+2. **实用建议** - 分享你的"搬家老司机"经验，具体可操作
+3. **适度吐槽** - 可以吐槽搬家公司的套路，帮用户避坑
+4. **自然过渡** - 回答后自然引导回信息收集，不要生硬
+5. **诚实态度** - 不确定就说不确定，不装
 
 # 过渡策略
 {transition_strategy}
 
-# 输出要求
-直接输出回复内容，像真人顾问一样自然交流。
-回答问题后，可以适当引导用户继续提供搬家信息。
+{variety_instruction}
 """
 
 TRANSITION_STRATEGIES = {
@@ -218,13 +217,14 @@ def build_advisor_prompt(
     }, ensure_ascii=False, indent=2)
 
     return ADVISOR_SYSTEM_PROMPT.format(
+        persona=PERSONA_INJECTION,
         current_time=datetime.now().strftime("%Y年%m月%d日 %H:%M"),
         question_type=question_type,
         relevant_knowledge=get_relevant_knowledge(question_type),
         fields_summary=fields_summary,
         recent_messages=formatted_messages,
-        style_instruction=format_style_instruction(style),
-        transition_strategy=get_transition_strategy(question_type, fields_status, user_emotion)
+        transition_strategy=get_transition_strategy(question_type, fields_status, user_emotion),
+        variety_instruction=VARIETY_INSTRUCTION
     )
 
 

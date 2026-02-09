@@ -12,7 +12,8 @@ from app.agents.router import get_router_agent
 from app.agents.collector import get_collector_agent
 from app.agents.advisor import get_advisor_agent
 from app.agents.companion import get_companion_agent
-from app.core.phase_inference import infer_phase, get_completion_info, get_quick_options_for_phase
+from app.core.phase_inference import infer_phase, get_completion_info
+from app.services.smart_options import get_smart_quick_options
 from app.models.schemas import AgentType
 from app.services.quote_service import QuoteService, SessionPersistenceService
 from app.services.item_service import get_item_service
@@ -643,27 +644,7 @@ async def handle_image_uploaded(
             "current_items": current_items
         })
 
-        # Generate a friendly message about recognized items
-        if recognized_items:
-            item_names = [item.get("name_ja", item.get("name", "物品")) for item in recognized_items[:5]]
-            items_text = "、".join(item_names)
-            if len(recognized_items) > 5:
-                items_text += f" 等 {len(recognized_items) - 5} 件物品"
-
-            response_msg = f"识别完成！发现以下物品：{items_text}\n\n请确认或修改物品清单。您还可以继续添加物品或上传其他照片。"
-        else:
-            response_msg = "无法从图片中识别物品。请尝试上传更清晰的图片，或从目录中手动选择物品。"
-
-        # Stream the response
-        for char in response_msg:
-            await websocket.send_json({
-                "type": "text_delta",
-                "content": char
-            })
-        await websocket.send_json({"type": "text_done"})
-
-        # Save message
-        await redis_client.add_message(session["session_token"], "assistant", response_msg)
+        # 不输出文字消息，识别卡片已经显示了内容
 
         # Send updated metadata
         current_phase = infer_phase(fields_status)
@@ -681,7 +662,7 @@ async def handle_image_uploaded(
                 "missing_fields": completion_info["missing_fields"]
             },
             "ui_component": ui_component,
-            "quick_options": ["继续添加", "确认物品", "上传其他照片"]
+            "quick_options": []  # 识别结果卡片显示时不显示快捷选项
         })
 
     except Exception as e:
@@ -745,29 +726,17 @@ async def handle_items_confirmed(
         session["fields_status"] = fields_status
         session["current_phase"] = current_phase.value
 
-        # Send confirmation
+        # Send confirmation - 前端会更新卡片按钮为"已添加"状态
         await websocket.send_json({
             "type": "items_confirmed",
             "items": validation_result["items"],
-            "total_count": validation_result["total_count"]
+            "total_count": validation_result["total_count"],
+            "keep_card": True  # 告诉前端保留卡片
         })
 
-        # Generate response message
+        # 简化确认消息 - 卡片下方显示
         total = validation_result["total_count"]
-        response_msg = f"已确认添加 {total} 件物品。\n\n"
-
-        # Check what's next
-        completion_info = get_completion_info(fields_status)
-        if completion_info["next_priority_field"]:
-            next_field = completion_info["next_priority_field"]
-            if next_field == "packing_service":
-                response_msg += "接下来，关于打包服务，您打算怎么处理？是需要搬家公司帮忙打包，还是自己来？"
-            elif next_field == "from_floor_elevator":
-                response_msg += "接下来，请告诉我搬出地址是几楼？有没有电梯？"
-            else:
-                response_msg += "请继续提供其他信息。"
-        else:
-            response_msg += "所有必填信息已收集完成。是否确认并提交报价请求？"
+        response_msg = f"已添加 {total}件物品，已添加的行李可点击页面右上角【搬家清单】查看"
 
         # Stream the response
         for char in response_msg:
@@ -781,7 +750,10 @@ async def handle_items_confirmed(
         await redis_client.add_message(session["session_token"], "assistant", response_msg)
 
         # Send updated metadata
-        ui_component = get_ui_component_for_phase(current_phase, fields_status)
+        completion_info = get_completion_info(fields_status)
+
+        # 物品确认后显示"继续添加"或"没有其他行李了"选项
+        smart_options = ["继续添加", "没有其他行李了"]
 
         await websocket.send_json({
             "type": "metadata",
@@ -793,8 +765,8 @@ async def handle_items_confirmed(
                 "next_priority_field": completion_info["next_priority_field"],
                 "missing_fields": completion_info["missing_fields"]
             },
-            "ui_component": ui_component,
-            "quick_options": get_quick_options_for_phase(current_phase, fields_status)
+            "ui_component": {"type": "none"},  # 卡片由前端保持显示
+            "quick_options": smart_options
         })
 
     except Exception as e:
@@ -856,6 +828,21 @@ async def handle_session_reset(
             })
         await websocket.send_json({"type": "text_done"})
 
+        # Save welcome message first
+        await redis_client.add_message(
+            session["session_token"],
+            "assistant",
+            welcome_message
+        )
+
+        # Get smart options for opening - LLM根据欢迎消息上下文判断
+        smart_options = await get_smart_quick_options(
+            fields_status=new_fields,
+            recent_messages=[{"role": "assistant", "content": welcome_message}],
+            next_field=None,
+            context_hint="会话重置，Agent刚发送欢迎消息"
+        )
+
         # Send metadata
         await websocket.send_json({
             "type": "metadata",
@@ -867,15 +854,8 @@ async def handle_session_reset(
                 "next_priority_field": "people_count"
             },
             "ui_component": {"type": "none"},
-            "quick_options": get_quick_options_for_phase(Phase.OPENING, new_fields)
+            "quick_options": smart_options
         })
-
-        # Save welcome message
-        await redis_client.add_message(
-            session["session_token"],
-            "assistant",
-            welcome_message
-        )
 
     except Exception as e:
         logger.error(f"Session reset error: {e}")
@@ -926,6 +906,17 @@ async def websocket_endpoint(
 
             await websocket.send_json({"type": "text_done"})
 
+            # Save welcome message first
+            await redis_client.add_message(token, "assistant", welcome_message)
+
+            # Get smart options for new session - LLM根据欢迎消息上下文判断
+            smart_options = await get_smart_quick_options(
+                fields_status=session["fields_status"],
+                recent_messages=[{"role": "assistant", "content": welcome_message}],
+                next_field=None,
+                context_hint="新会话开始，Agent刚发送欢迎消息"
+            )
+
             # Send initial metadata
             await websocket.send_json({
                 "type": "metadata",
@@ -937,11 +928,8 @@ async def websocket_endpoint(
                     "next_priority_field": "people_count"
                 },
                 "ui_component": {"type": "none"},
-                "quick_options": get_quick_options_for_phase(Phase.OPENING, session["fields_status"])
+                "quick_options": smart_options
             })
-
-            # Save welcome message
-            await redis_client.add_message(token, "assistant", welcome_message)
 
         else:
             # Existing session - send previous messages and current state
@@ -958,6 +946,14 @@ async def websocket_endpoint(
             current_phase = infer_phase(session["fields_status"])
             ui_component = get_ui_component_for_phase(current_phase, session["fields_status"])
 
+            # Get smart options based on conversation history - LLM根据上下文判断
+            smart_options = await get_smart_quick_options(
+                fields_status=session["fields_status"],
+                recent_messages=cached_messages[-6:],
+                next_field=completion_info.get("next_priority_field"),
+                context_hint="用户重新连接，根据最后一条Agent消息判断选项"
+            )
+
             await websocket.send_json({
                 "type": "metadata",
                 "current_phase": current_phase.value,
@@ -969,7 +965,7 @@ async def websocket_endpoint(
                     "missing_fields": completion_info["missing_fields"]
                 },
                 "ui_component": ui_component,
-                "quick_options": get_quick_options_for_phase(current_phase, session["fields_status"])
+                "quick_options": smart_options
             })
 
         # Main message loop

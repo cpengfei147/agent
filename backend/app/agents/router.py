@@ -358,9 +358,16 @@ class RouterAgent:
                     if "special_notes" not in updated:
                         updated["special_notes"] = []
                     if isinstance(extracted.parsed_value, list):
-                        updated["special_notes"].extend(extracted.parsed_value)
+                        for v in extracted.parsed_value:
+                            if v == "没有了" or v == "没有其他":
+                                updated["special_notes_done"] = True
+                            elif v not in updated["special_notes"]:
+                                updated["special_notes"].append(v)
                     else:
-                        updated["special_notes"].append(extracted.parsed_value)
+                        if extracted.parsed_value == "没有了" or extracted.parsed_value == "没有其他":
+                            updated["special_notes_done"] = True
+                        elif extracted.parsed_value not in updated["special_notes"]:
+                            updated["special_notes"].append(extracted.parsed_value)
 
         return updated
 
@@ -429,7 +436,7 @@ class RouterAgent:
         if items_status not in ["baseline", "ideal"]:
             return Phase.ITEMS.value
 
-        # Check other info (floor, elevator, etc.)
+        # Check other info (floor, elevator, packing, special_notes)
         from_floor = fields_status.get("from_floor_elevator", {})
         floor_status = from_floor.get("status", "not_collected") if isinstance(from_floor, dict) else "not_collected"
 
@@ -440,23 +447,28 @@ class RouterAgent:
         if building_type in apartment_types and floor_status not in ["baseline", "ideal", "skipped"]:
             return Phase.OTHER_INFO.value
 
+        # Check to_floor_elevator (非必填，但要询问)
+        to_floor = fields_status.get("to_floor_elevator", {})
+        to_floor_status = to_floor.get("status", "not_collected") if isinstance(to_floor, dict) else "not_collected"
+        if to_floor_status not in ["baseline", "ideal", "skipped"]:
+            return Phase.OTHER_INFO.value
+
+        # Check packing_service
+        if fields_status.get("packing_service") is None:
+            return Phase.OTHER_INFO.value
+
+        # Check special_notes (用户点"没有了"才算完成)
+        special_notes_done = fields_status.get("special_notes_done", False)
+        if not special_notes_done:
+            return Phase.OTHER_INFO.value
+
         # All complete
         return Phase.CONFIRMATION.value
 
     def _get_next_field(self, fields_status: Dict[str, Any]) -> Optional[str]:
         """Get next field to collect based on priority"""
-        phase = self._infer_phase(fields_status)
-
-        field_map = {
-            Phase.PEOPLE_COUNT.value: "people_count",
-            Phase.ADDRESS.value: "from_address",
-            Phase.DATE.value: "move_date",
-            Phase.ITEMS.value: "items",
-            Phase.OTHER_INFO.value: "from_floor_elevator",
-            Phase.CONFIRMATION.value: None
-        }
-
-        return field_map.get(phase)
+        from app.core.phase_inference import get_next_priority_field
+        return get_next_priority_field(fields_status)
 
 
 # Global router agent instance
