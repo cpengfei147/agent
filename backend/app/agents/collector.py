@@ -559,8 +559,8 @@ class CollectorAgent:
                 updated["to_floor_elevator"]["status"] = field_status
 
         elif field_name == "packing_service":
-            # 处理跳过情况
-            skip_keywords = ["不需要", "不用", "自己打包", "跳过", "没有"]
+            # 处理跳过情况 - 注意：不包含"没有"，避免与 special_notes 的"没有了"混淆
+            skip_keywords = ["不需要", "不用", "自己打包", "跳过"]
             if value and any(kw in str(value) for kw in skip_keywords):
                 updated["packing_service"] = value
                 updated["packing_service_status"] = FieldStatus.SKIPPED.value

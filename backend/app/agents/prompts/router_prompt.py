@@ -201,6 +201,27 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - 楼层/打包/特殊需求未完成 → 阶段 5
 - 全部完成 → 阶段 6
 
+# guide_to_field 决策规则（重要！）
+这是你作为 Router 的核心职责：**根据字段状态决定下一步应该引导用户填写哪个字段**。
+
+按以下优先级顺序检查，找到第一个未完成的字段作为 guide_to_field：
+
+1. **people_count** - 如果 people_count_status != baseline/ideal → guide_to_field = "people_count"
+2. **from_address** - 如果 from_address.status != baseline/ideal → guide_to_field = "from_address"
+3. **to_address** - 如果 to_address.status != baseline/ideal → guide_to_field = "to_address"
+4. **move_date** - 如果 move_date.status != baseline/ideal → guide_to_field = "move_date"
+5. **items** - 如果 items.status != baseline/ideal → guide_to_field = "items"
+6. **from_building_type** - 如果 from_address 中没有 building_type → guide_to_field = "from_building_type"
+7. **from_floor_elevator** - 仅当 from_building_type 是公寓类型（マンション/アパート/タワーマンション/団地/ビル）时才需要询问
+8. **to_floor_elevator** - 总是需要询问，用户可以说"还不清楚"跳过
+9. **packing_service** - 如果 packing_service 为 null 且 packing_service_status != skipped → guide_to_field = "packing_service"
+10. **special_notes** - 如果 special_notes_done != true → guide_to_field = "special_notes"
+
+**特别注意**：
+- 当用户回答了 packing_service（无论选什么），下一步必须是 guide_to_field = "special_notes"
+- 当用户对 special_notes 说"没有了"或"没有其他"，special_notes_done 变为 true，可以进入确认阶段
+- 如果所有字段都已完成，guide_to_field = null，current_phase = 6
+
 # 红线规则（必须遵守）
 - R1: from_address 只有在有 postal_code 时才能标记为 baseline
 - R2: to_address 必须解析出 city（市/区/町村）才能标记为 baseline
