@@ -463,13 +463,26 @@ def build_confirmation_prompt(fields_status: Dict[str, Any]) -> str:
             date_str += f" {move_date['time_slot']}"
         summary_parts.append(f"- 搬家时间：{date_str}")
 
-    # Items
+    # Items - 使用 name_ja 并显示数量
     items = fields_status.get("items", {})
     if isinstance(items, dict) and items.get("list"):
-        item_names = [item.get("name", str(item)) for item in items["list"][:5]]
-        items_str = "、".join(item_names)
-        if len(items["list"]) > 5:
-            items_str += f" 等{len(items['list'])}件"
+        item_list = items["list"]
+        # 显示物品名称和数量，优先使用 name_ja
+        item_strs = []
+        for item in item_list[:5]:
+            name = item.get("name_ja") or item.get("name", "物品")
+            count = item.get("count", 1)
+            if count > 1:
+                item_strs.append(f"{name}×{count}")
+            else:
+                item_strs.append(name)
+        items_str = "、".join(item_strs)
+        # 计算总数量
+        total_count = sum(item.get("count", 1) for item in item_list)
+        if len(item_list) > 5:
+            items_str += f" 等共{total_count}件"
+        else:
+            items_str += f"（共{total_count}件）"
         summary_parts.append(f"- 搬运物品：{items_str}")
 
     # From Floor/elevator

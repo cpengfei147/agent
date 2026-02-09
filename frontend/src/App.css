@@ -317,9 +317,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 8px 0;
+  padding: 4px 0;
   margin-left: 44px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .quick-option {

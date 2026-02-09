@@ -670,49 +670,22 @@ async def handle_image_uploaded(
     try:
         logger.info(f"Processing image upload result: {image_id}, items: {len(recognized_items)}")
 
-        # Get current fields
+        # Get current fields - 只读取，不在这里累加物品
+        # 物品累加只在 handle_items_confirmed 中进行，避免重复累加
         fields_status = session["fields_status"].copy()
 
         # Initialize items if needed
         if "items" not in fields_status or not isinstance(fields_status["items"], dict):
             fields_status["items"] = {"list": [], "status": "in_progress"}
 
-        # Add recognized items to the list
+        # 获取已确认的物品列表（用于展示）
         current_items = fields_status["items"].get("list", [])
+        logger.info(f"Image upload - existing confirmed items: {len(current_items)}")
 
-        for item in recognized_items:
-            # Check if item already exists (by name)
-            existing = next(
-                (i for i in current_items if i.get("name_ja") == item.get("name_ja")),
-                None
-            )
-            if existing:
-                # Update count
-                existing["count"] = existing.get("count", 1) + item.get("count", 1)
-            else:
-                current_items.append({
-                    "name": item.get("name", "Unknown"),
-                    "name_ja": item.get("name_ja", "Unknown"),
-                    "category": item.get("category", "small_items"),
-                    "count": item.get("count", 1),
-                    "note": item.get("note"),
-                    "from_image": image_id
-                })
+        # 不要在这里累加物品到session！只展示识别结果给用户确认
+        # 累加逻辑只在 handle_items_confirmed 中执行
 
-        fields_status["items"]["list"] = current_items
-        fields_status["items"]["status"] = "in_progress"
-
-        # Update session
-        await redis_client.set_session(
-            session_token=session["session_token"],
-            session_id=session["session_id"],
-            current_phase=Phase.ITEMS.value,
-            fields_status=fields_status
-        )
-
-        session["fields_status"] = fields_status
-
-        # Send items recognized response
+        # Send items recognized response - 发送识别结果和已确认的物品
         await websocket.send_json({
             "type": "items_recognized",
             "image_id": image_id,
@@ -782,11 +755,39 @@ async def handle_items_confirmed(
         # Get current fields
         fields_status = session["fields_status"].copy()
 
-        # Update items with validated list
+        # 获取现有物品列表
+        existing_items = []
+        if "items" in fields_status and isinstance(fields_status["items"], dict):
+            existing_items = fields_status["items"].get("list", []).copy()  # 使用 copy() 避免引用问题
+
+        logger.info(f"Items confirmation - existing items before merge: {len(existing_items)}, names: {[i.get('name_ja') for i in existing_items]}")
+
+        # 累加新确认的物品到现有列表（而不是覆盖）
+        new_items = validation_result["items"]
+        logger.info(f"Items confirmation - new items to add: {len(new_items)}, names: {[i.get('name_ja') for i in new_items]}")
+        for item in new_items:
+            # 检查是否已存在相同物品（按 name_ja 判断）
+            existing_item = next(
+                (i for i in existing_items if i.get("name_ja") == item.get("name_ja")),
+                None
+            )
+            if existing_item:
+                # 已存在，更新数量（累加）
+                existing_item["count"] = existing_item.get("count", 1) + item.get("count", 1)
+            else:
+                # 不存在，添加新物品
+                existing_items.append(item)
+
+        # 计算总数量
+        total_count = sum(item.get("count", 1) for item in existing_items)
+        logger.info(f"Items confirmation - after merge: {len(existing_items)} unique items, total_count: {total_count}")
+        logger.info(f"Items confirmation - merged list: {[(i.get('name_ja'), i.get('count')) for i in existing_items]}")
+
+        # Update items with merged list
         fields_status["items"] = {
-            "list": validation_result["items"],
+            "list": existing_items,
             "status": "baseline",
-            "total_count": validation_result["total_count"]
+            "total_count": total_count
         }
 
         # Update session
@@ -803,16 +804,18 @@ async def handle_items_confirmed(
         session["current_phase"] = current_phase.value
 
         # Send confirmation - 前端会更新卡片按钮为"已添加"状态
+        # 发送累积后的完整列表和总数，而不是仅发送新确认的物品
         await websocket.send_json({
             "type": "items_confirmed",
-            "items": validation_result["items"],
-            "total_count": validation_result["total_count"],
+            "items": existing_items,  # 累积后的完整物品列表
+            "total_count": total_count,  # 累积后的总数量
+            "newly_added_count": validation_result["total_count"],  # 本次新添加的数量
             "keep_card": True  # 告诉前端保留卡片
         })
 
         # 简化确认消息 - 卡片下方显示
-        total = validation_result["total_count"]
-        response_msg = f"已添加 {total}件物品，已添加的行李可点击页面右上角【搬家清单】查看"
+        newly_added = validation_result["total_count"]
+        response_msg = f"已添加 {newly_added} 件物品，共 {total_count} 件。已添加的行李可点击页面右上角【搬家清单】查看"
 
         # Stream the response
         for char in response_msg:
