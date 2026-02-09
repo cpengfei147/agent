@@ -57,10 +57,16 @@ class RouterAgent:
                 {"role": "user", "content": user_message}
             ]
 
-            # Call LLM with JSON mode
+            # Call LLM with JSON mode and Langfuse tracing
             response = await self.llm_client.chat_complete(
                 messages=messages,
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                trace_name="router_analyze",
+                trace_metadata={
+                    "user_message": user_message[:100],
+                    "fields_collected": len([k for k, v in fields_status.items()
+                                            if isinstance(v, dict) and v.get("status") in ["baseline", "ideal"]])
+                }
             )
 
             if response.get("error"):

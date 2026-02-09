@@ -372,6 +372,10 @@ async def process_with_collector(
         }
     })
 
+    # Flush Langfuse traces (if enabled)
+    from app.core.tracing import flush_traces
+    flush_traces()
+
 
 async def process_with_advisor(
     router_output,

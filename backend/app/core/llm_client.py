@@ -9,6 +9,27 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Langfuse integration for observability
+_langfuse = None
+
+def get_langfuse_client():
+    """Get Langfuse client for tracing"""
+    global _langfuse
+    if _langfuse is None and settings.langfuse_enabled:
+        try:
+            from langfuse import Langfuse
+            _langfuse = Langfuse(
+                public_key=settings.langfuse_public_key,
+                secret_key=settings.langfuse_secret_key,
+                host=settings.langfuse_host
+            )
+            logger.info("Langfuse client initialized for LLM tracing")
+        except ImportError:
+            logger.warning("Langfuse not installed. Run: pip install langfuse")
+        except Exception as e:
+            logger.error(f"Failed to initialize Langfuse: {e}")
+    return _langfuse
+
 
 class LLMClient(ABC):
     """Abstract base class for LLM clients"""
@@ -120,19 +141,33 @@ class OpenAIClient(LLMClient):
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]] = None,
         response_format: Dict[str, Any] = None,
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        trace_name: str = None,
+        trace_metadata: Dict[str, Any] = None
     ) -> Dict[str, Any]:
-        """Send non-streaming chat request"""
+        """Send non-streaming chat request with optional Langfuse tracing"""
+        generation = None
+        langfuse = get_langfuse_client()
+
         try:
             kwargs = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": temperature,  # 添加温度参数让回复更多样化
+                "temperature": temperature,
             }
             if tools:
                 kwargs["tools"] = tools
             if response_format:
                 kwargs["response_format"] = response_format
+
+            # Start Langfuse generation tracking
+            if langfuse and trace_name:
+                generation = langfuse.generation(
+                    name=trace_name,
+                    model=self.model,
+                    input=messages,
+                    metadata=trace_metadata or {}
+                )
 
             response = await self.client.chat.completions.create(**kwargs)
 
@@ -157,10 +192,25 @@ class OpenAIClient(LLMClient):
                     for tc in message.tool_calls
                 ]
 
+            # End Langfuse generation tracking
+            if generation:
+                generation.end(
+                    output=message.content,
+                    usage={
+                        "prompt_tokens": response.usage.prompt_tokens if response.usage else None,
+                        "completion_tokens": response.usage.completion_tokens if response.usage else None,
+                        "total_tokens": response.usage.total_tokens if response.usage else None
+                    }
+                )
+                langfuse.flush()
+
             return result
 
         except Exception as e:
             logger.error(f"OpenAI API error: {e}")
+            if generation:
+                generation.end(output=None, level="ERROR", status_message=str(e))
+                langfuse.flush()
             return {
                 "content": None,
                 "error": str(e)
