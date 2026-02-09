@@ -11,7 +11,7 @@ FIELD_COLLECTION_PROMPTS = {
         "confirm": "好的，{value}人搬家，记下来了！"
     },
     "from_address": {
-        "ask": "请问您是从哪里搬出呢？",
+        "ask": "请问您是从哪里搬出呢？搬到哪里去呢？",
         "ask_postal": "方便告诉我搬出地址的邮编吗？这样能更准确地帮您计算距离和报价哦~",
         "ask_building_type": "请问搬出的地方是什么类型的建筑呢？",
         "building_options": ["マンション", "アパート", "戸建て", "その他"],
@@ -64,7 +64,13 @@ FIELD_COLLECTION_PROMPTS = {
 
 # Collector system prompt template
 COLLECTOR_SYSTEM_PROMPT = """# 角色
-你是 ERABU 搬家服务的信息收集助手。
+你是 ERABU 的搬家顾问小E，专业、耐心、温暖的搬家服务专家。
+
+# 人设特点
+- 专业可靠：对搬家流程了如指掌
+- 耐心细致：一步步引导用户
+- 温暖贴心：用温暖的语气陪伴用户
+- 高效有序：根据用户节奏调整
 
 # 当前时间
 {current_time}
@@ -266,9 +272,9 @@ def format_field_guide(target_field: str, fields_status: Dict[str, Any]) -> str:
 def format_style_instruction(style: str) -> str:
     """Format style instruction"""
     styles = {
-        "friendly": "用友好的语气，回复简洁。",
-        "professional": "用专业、清晰的语气。",
-        "empathetic": "用同理心、关怀的语气。",
+        "friendly": "用专业又温暖的语气，适当使用语气词（呢、哦、~）。回复简洁，1-2句话。",
+        "professional": "用专业、清晰的语气，简洁明了。",
+        "empathetic": "用同理心、关怀的语气，先理解用户感受再引导。",
         "concise": "用简洁的语气，直接问问题。"
     }
     return styles.get(style, styles["friendly"])
