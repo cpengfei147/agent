@@ -247,6 +247,9 @@ class CollectorAgent:
                 return
 
         # Get quick options from hardcoded logic
+        # If next_field changed, recalculate sub_task for correct options
+        if next_field and next_field != target_field:
+            sub_task = self._determine_sub_task(next_field, updated_fields, validation_results)
         quick_options = self._get_quick_options(next_field, sub_task, updated_fields)
 
         yield {

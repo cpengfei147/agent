@@ -26,6 +26,7 @@ FIELD_COLLECTION_PROMPTS = {
     },
     "move_date": {
         "ask": "请问您计划什么时候搬家呢？",
+        "ask_options": ["这个月", "下个月", "再下个月"],
         "ask_specific": "请问是{month}月的上旬、中旬还是下旬呢？或者有具体日期吗？",
         "ask_period": "请问是上旬、中旬还是下旬呢？或者有具体日期吗？这样我们可以更准确地为您安排。",
         "ask_time_slot": "请问希望上午还是下午搬家呢？",
