@@ -65,12 +65,39 @@ async def get_smart_quick_options(
 
     # === 固定选项场景 ===
 
+    # 开场白阶段：所有字段都未收集时，显示开场白选项
+    from app.core.phase_inference import get_completion_info, infer_phase
+    from app.models.fields import Phase
+
+    current_phase = infer_phase(fields_status)
+    if current_phase == Phase.OPENING:
+        return ["获取搬家报价", "咨询搬家问题", "了解服务内容"]
+
     # 阶段6确认阶段：如果用户还未确认，显示确认相关选项
-    from app.core.phase_inference import get_completion_info
     completion_info = get_completion_info(fields_status)
     if completion_info["can_submit"] and not fields_status.get("user_confirmed_submit"):
         # 用户可以提交但还未确认，显示确认选项
         return ["确认无误，发送报价", "需要修改"]
+
+    # 人数：固定选项
+    if next_field == "people_count":
+        return ["单身", "2~3人", "4人以上"]
+
+    # 搬出地址建筑类型：固定选项
+    if next_field == "from_building_type":
+        return ["マンション", "アパート", "戸建て", "タワーマンション"]
+
+    # 搬出楼层电梯：固定选项
+    if next_field == "from_floor_elevator":
+        return ["有电梯", "无电梯"]
+
+    # 搬入楼层电梯：固定选项（包含"还不清楚"）
+    if next_field == "to_floor_elevator":
+        return ["有电梯", "无电梯", "还不清楚"]
+
+    # 打包服务：固定选项
+    if next_field == "packing_service":
+        return ["全部请公司打包", "自己打包"]
 
     # 阶段5特殊注意事项：6个固定选项，动态过滤已选的
     if next_field == "special_notes":
@@ -79,6 +106,13 @@ async def get_smart_quick_options(
         if not isinstance(selected, list):
             selected = []
         return [opt for opt in all_options if opt not in selected]
+
+    # 物品收集阶段
+    if next_field == "items":
+        items = fields_status.get("items", {})
+        if isinstance(items, dict) and items.get("list"):
+            return ["继续添加", "没有其他行李了"]
+        # 没有物品时不显示快捷选项，让用户上传照片或输入
 
     # === 其他所有场景由LLM智能判断 ===
 

@@ -4,6 +4,7 @@ Note: Address parsing is done by Router (LLM).
 This service only verifies and enriches addresses using Google Maps API.
 """
 
+import asyncio
 import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
@@ -25,10 +26,16 @@ class AddressVerificationResult:
     confidence: float = 0.0
     error: Optional[str] = None
     suggestions: List[str] = None
+    # 新增：多个候选地址
+    multiple_results: List[Dict[str, Any]] = None
+    # 新增：验证状态 - verified(成功), needs_selection(多个结果), needs_more_info(信息不足), failed(失败)
+    verification_status: str = "pending"
 
     def __post_init__(self):
         if self.suggestions is None:
             self.suggestions = []
+        if self.multiple_results is None:
+            self.multiple_results = []
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -42,7 +49,9 @@ class AddressVerificationResult:
             "lng": self.lng,
             "confidence": self.confidence,
             "error": self.error,
-            "suggestions": self.suggestions
+            "suggestions": self.suggestions,
+            "multiple_results": self.multiple_results,
+            "verification_status": self.verification_status
         }
 
 
@@ -58,7 +67,27 @@ class AddressService:
         if self._client is None and self.api_key:
             try:
                 import googlemaps
-                self._client = googlemaps.Client(key=self.api_key)
+                import requests
+                import os
+
+                # Create a session with explicit HTTP proxy (avoid SOCKS proxy issues)
+                session = requests.Session()
+                session.trust_env = False  # Don't use environment proxy settings
+
+                # Use HTTP proxy if available (SOCKS proxy causes issues)
+                http_proxy = os.environ.get('http_proxy')
+                if http_proxy and not http_proxy.startswith('socks'):
+                    session.proxies = {
+                        'http': http_proxy,
+                        'https': http_proxy
+                    }
+                    logger.info(f"Using HTTP proxy for Google Maps: {http_proxy}")
+
+                self._client = googlemaps.Client(
+                    key=self.api_key,
+                    requests_session=session,
+                    timeout=10  # Add timeout to avoid hanging
+                )
             except ImportError:
                 logger.warning("googlemaps package not installed")
             except Exception as e:
@@ -107,14 +136,23 @@ class AddressService:
         region: str,
         local_result: AddressVerificationResult
     ) -> AddressVerificationResult:
-        """Verify address using Google Maps Geocoding API"""
+        """Verify address using Google Maps Geocoding API
+
+        Returns different verification_status based on result:
+        - "verified": 成功找到唯一地址且有邮编
+        - "needs_selection": 找到多个候选地址，需要用户选择
+        - "needs_more_info": 地址信息不足（无邮编），需要补充
+        - "failed": 完全无法识别
+        """
         client = self._get_client()
         if not client:
+            local_result.verification_status = "no_api"
             return local_result
 
         try:
-            # Geocode the address
-            geocode_result = client.geocode(
+            # Geocode the address - run in thread pool to avoid blocking
+            geocode_result = await asyncio.to_thread(
+                client.geocode,
                 address,
                 region=region,
                 language="ja"
@@ -123,33 +161,75 @@ class AddressService:
             if not geocode_result:
                 return AddressVerificationResult(
                     is_valid=False,
-                    error="地址无法识别",
-                    suggestions=["请检查地址是否正确"]
+                    error="地址无法识别，请检查输入是否正确",
+                    suggestions=["请提供更详细的地址", "可以尝试输入邮编"],
+                    verification_status="failed"
                 )
 
-            # Use the first result
+            # 如果有多个结果，返回候选列表让用户选择
+            if len(geocode_result) > 1:
+                multiple_results = []
+                for idx, r in enumerate(geocode_result[:5]):  # 最多5个候选
+                    components = self._parse_google_components(r.get("address_components", []))
+                    location = r.get("geometry", {}).get("location", {})
+                    multiple_results.append({
+                        "index": idx,
+                        "formatted_address": r.get("formatted_address"),
+                        "postal_code": components.get("postal_code"),
+                        "prefecture": components.get("prefecture"),
+                        "city": components.get("city"),
+                        "district": components.get("district"),
+                        "lat": location.get("lat"),
+                        "lng": location.get("lng")
+                    })
+
+                return AddressVerificationResult(
+                    is_valid=True,
+                    formatted_address=None,  # 多个结果时不设置
+                    multiple_results=multiple_results,
+                    verification_status="needs_selection",
+                    suggestions=["请从以下地址中选择正确的一个"]
+                )
+
+            # 只有一个结果
             result = geocode_result[0]
-
-            # Parse address components
             components = self._parse_google_components(result.get("address_components", []))
-
-            # Get location
             location = result.get("geometry", {}).get("location", {})
 
+            # 检查是否有邮编（搬出地址必须有邮编）
+            postal_code = components.get("postal_code")
+            if not postal_code:
+                return AddressVerificationResult(
+                    is_valid=True,
+                    formatted_address=result.get("formatted_address"),
+                    prefecture=components.get("prefecture"),
+                    city=components.get("city"),
+                    district=components.get("district"),
+                    lat=location.get("lat"),
+                    lng=location.get("lng"),
+                    confidence=0.6,
+                    verification_status="needs_more_info",
+                    suggestions=["地址已识别，但缺少邮编信息", "请提供邮编或更详细的地址"]
+                )
+
+            # 成功验证
             return AddressVerificationResult(
                 is_valid=True,
                 formatted_address=result.get("formatted_address"),
-                postal_code=components.get("postal_code"),
+                postal_code=postal_code,
                 prefecture=components.get("prefecture"),
                 city=components.get("city"),
                 district=components.get("district"),
                 lat=location.get("lat"),
                 lng=location.get("lng"),
-                confidence=0.9 if result.get("geometry", {}).get("location_type") == "ROOFTOP" else 0.7
+                confidence=0.9 if result.get("geometry", {}).get("location_type") == "ROOFTOP" else 0.7,
+                verification_status="verified"
             )
 
         except Exception as e:
             logger.error(f"Google geocoding failed: {e}")
+            local_result.verification_status = "api_error"
+            local_result.error = f"地址验证服务暂时不可用: {str(e)}"
             return local_result
 
     def _parse_google_components(self, components: List[Dict]) -> Dict[str, str]:

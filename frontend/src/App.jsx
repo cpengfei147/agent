@@ -24,6 +24,8 @@ const MSG_TYPES = {
   SESSION_RESET: 'session_reset',
   ITEMS_RECOGNIZED: 'items_recognized',
   ITEMS_CONFIRMED: 'items_confirmed',
+  ADDRESS_SELECTED: 'address_selected',
+  ADDRESS_CONFIRMED: 'address_confirmed',
   ERROR: 'error'
 }
 
@@ -58,6 +60,11 @@ function App() {
   const [isRecognizing, setIsRecognizing] = useState(false)
   const [recognitionStep, setRecognitionStep] = useState(0)
   const [itemsJustConfirmed, setItemsJustConfirmed] = useState(false)  // 刚确认完成，卡片保留显示
+
+  // 地址验证相关
+  const [isVerifyingAddress, setIsVerifyingAddress] = useState(false)
+  const [addressVerifyStep, setAddressVerifyStep] = useState(0)
+  const [pendingAddressData, setPendingAddressData] = useState(null)  // 验证中的地址数据
 
   // 打字效果队列
   const textQueueRef = useRef([])
@@ -209,7 +216,67 @@ function App() {
             lastOptionsRef.current = newOptions
           }
         }
-        if (data.ui_component) setUiComponent(data.ui_component)
+        // 处理地址卡片 - 嵌入消息流（带验证动画）
+        if (data.ui_component) {
+          const uiType = data.ui_component.type
+          if (uiType === 'address_confirm' || uiType === 'address_selection') {
+            const addressType = data.ui_component.data?.address_type
+
+            // 检查地址是否已确认（从 fields_status 判断）
+            const addrField = data.fields_status?.[`${addressType}_address`] || {}
+            const isAlreadyConfirmed = addrField.status === 'baseline' && !addrField.needs_confirmation
+
+            // 检查是否已经有相同的地址卡片在消息流中
+            const existingCard = messages.find(m =>
+              (m.type === 'address_confirm_card' || m.type === 'address_selection_card') &&
+              m.addressType === addressType
+            )
+
+            if (!existingCard && !isAlreadyConfirmed && !isVerifyingAddress) {
+              // 开始显示验证动画
+              setIsVerifyingAddress(true)
+              setAddressVerifyStep(0)
+              setPendingAddressData({
+                type: uiType === 'address_confirm' ? 'address_confirm_card' : 'address_selection_card',
+                addressType: addressType,
+                data: data.ui_component.data
+              })
+
+              // 步骤动画
+              let step = 0
+              const stepInterval = setInterval(() => {
+                step++
+                setAddressVerifyStep(step)
+                if (step >= 4) {
+                  clearInterval(stepInterval)
+                  // 动画完成后添加卡片到消息流
+                  setTimeout(() => {
+                    setMessages(prev => [...prev, {
+                      role: 'assistant',
+                      type: uiType === 'address_confirm' ? 'address_confirm_card' : 'address_selection_card',
+                      addressType: addressType,
+                      data: data.ui_component.data,
+                      confirmed: false,
+                      streaming: false
+                    }])
+                    setIsVerifyingAddress(false)
+                    setPendingAddressData(null)
+                  }, 500)
+                }
+              }, 600)
+            } else if (existingCard && isAlreadyConfirmed) {
+              // 地址已确认，更新卡片状态
+              setMessages(prev => prev.map(msg => {
+                if ((msg.type === 'address_confirm_card' || msg.type === 'address_selection_card') &&
+                    msg.addressType === addressType) {
+                  return { ...msg, confirmed: true }
+                }
+                return msg
+              }))
+            }
+          }
+          setUiComponent(data.ui_component)
+        }
         if (data.completion) setCompletion(data.completion)
         break
 
@@ -237,6 +304,25 @@ function App() {
       case MSG_TYPES.ITEMS_CONFIRMED:
         // 服务端确认物品（卡片已在 confirmItems 中嵌入消息流）
         setConfirmedItems(data.items || [])
+        break
+
+      case MSG_TYPES.ADDRESS_SELECTED:
+        // 服务端确认地址选择
+        console.log('Address selected:', data)
+        break
+
+      case MSG_TYPES.ADDRESS_CONFIRMED:
+        // 服务端确认地址 - 更新嵌入卡片的状态
+        console.log('Address confirmed:', data)
+        if (data.address_type) {
+          setMessages(prev => prev.map(msg => {
+            if ((msg.type === 'address_confirm_card' || msg.type === 'address_selection_card') &&
+                msg.addressType === data.address_type) {
+              return { ...msg, confirmed: true }
+            }
+            return msg
+          }))
+        }
         break
 
       case MSG_TYPES.ERROR:
@@ -493,6 +579,16 @@ function App() {
       return renderEmbeddedItemsCard(msg.items, index)
     }
 
+    // 特殊处理：嵌入式地址确认卡片
+    if (msg.type === 'address_confirm_card') {
+      return renderEmbeddedAddressConfirmCard(msg, index)
+    }
+
+    // 特殊处理：嵌入式地址选择卡片
+    if (msg.type === 'address_selection_card') {
+      return renderEmbeddedAddressSelectionCard(msg, index)
+    }
+
     return (
       <div key={index} className={`message-wrapper ${msg.role}`}>
         {msg.role === 'assistant' && (
@@ -559,6 +655,184 @@ function App() {
     )
   }
 
+  // 渲染嵌入式地址确认卡片
+  const renderEmbeddedAddressConfirmCard = (msg, index) => {
+    const data = msg.data || {}
+    const addressType = msg.addressType || 'from'
+    const addressLabel = addressType === 'from' ? '搬出' : '搬入'
+
+    // 检查地址是否已确认（通过 fieldsStatus 判断）
+    const addressField = fieldsStatus[`${addressType}_address`] || {}
+    const isConfirmed = msg.confirmed || (addressField.status === 'baseline' && !addressField.needs_confirmation)
+
+    return (
+      <div key={index} className="message-wrapper assistant">
+        <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
+        <Card className="ui-card address-confirm-card">
+          <div className="card-body">
+            {isConfirmed ? (
+              <>
+                <div className="result-header" style={{ marginBottom: 12 }}>
+                  <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 20, marginRight: 8 }} />
+                  <span style={{ color: '#22c55e', fontWeight: 600 }}>{addressLabel}地址已确认</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3><EnvironmentOutlined style={{ marginRight: 8 }} />确认{addressLabel}地址</h3>
+                <p style={{ color: '#666', marginBottom: 16 }}>{data.message || '请确认以下地址是否正确'}</p>
+              </>
+            )}
+
+            <div style={{
+              padding: '16px',
+              background: '#f9fafb',
+              borderRadius: 8,
+              border: '1px solid #e5e7eb',
+              marginBottom: 16
+            }}>
+              <div style={{ fontWeight: 500, fontSize: 16, marginBottom: 8 }}>
+                {data.formatted_address}
+              </div>
+              <div style={{ fontSize: 13, color: '#666' }}>
+                {data.postal_code && (
+                  <div style={{ marginBottom: 4 }}>
+                    <Tag color="blue">〒{data.postal_code}</Tag>
+                  </div>
+                )}
+                <div>
+                  {data.prefecture && <span>{data.prefecture}</span>}
+                  {data.city && <span> {data.city}</span>}
+                  {data.district && <span> {data.district}</span>}
+                </div>
+              </div>
+            </div>
+
+            {isConfirmed ? (
+              <Button type="primary" block disabled style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}>
+                <CheckCircleOutlined /> 已确认
+              </Button>
+            ) : (
+              <Space style={{ width: '100%' }} direction="vertical">
+                <Button
+                  type="primary"
+                  block
+                  size="large"
+                  icon={<CheckCircleOutlined />}
+                  onClick={() => handleAddressConfirmed(addressType, true)}
+                >
+                  确认正确
+                </Button>
+                <Button
+                  block
+                  onClick={() => handleAddressConfirmed(addressType, false)}
+                >
+                  不对，重新输入
+                </Button>
+              </Space>
+            )}
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
+  // 渲染嵌入式地址选择卡片
+  const renderEmbeddedAddressSelectionCard = (msg, index) => {
+    const data = msg.data || {}
+    const addressType = msg.addressType || 'from'
+    const candidates = data.candidates || []
+    const originalInput = data.original_input || ''
+    const addressLabel = addressType === 'from' ? '搬出' : '搬入'
+
+    // 检查是否已选择
+    const addressField = fieldsStatus[`${addressType}_address`] || {}
+    const isSelected = msg.confirmed || addressField.verification_status === 'verified'
+
+    return (
+      <div key={index} className="message-wrapper assistant">
+        <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
+        <Card className="ui-card address-selection-card">
+          <div className="card-body">
+            {isSelected ? (
+              <div className="result-header" style={{ marginBottom: 12 }}>
+                <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 20, marginRight: 8 }} />
+                <span style={{ color: '#22c55e', fontWeight: 600 }}>已选择{addressLabel}地址</span>
+              </div>
+            ) : (
+              <>
+                <h3><EnvironmentOutlined style={{ marginRight: 8 }} />选择{addressLabel}地址</h3>
+                <p style={{ color: '#666', marginBottom: 16 }}>
+                  找到多个匹配地址，请选择正确的一个
+                </p>
+                <p style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
+                  您输入的：{originalInput}
+                </p>
+              </>
+            )}
+
+            {!isSelected && (
+              <>
+                <List
+                  className="address-candidate-list"
+                  dataSource={candidates}
+                  renderItem={(addr, idx) => (
+                    <div
+                      key={idx}
+                      className="address-candidate-item"
+                      style={{
+                        padding: '12px',
+                        marginBottom: 8,
+                        background: '#f9fafb',
+                        borderRadius: 8,
+                        border: '1px solid #e5e7eb',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
+                      }}
+                      onClick={() => handleAddressSelected(addressType, addr)}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = '#f0f5ff'
+                        e.currentTarget.style.borderColor = '#6366f1'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = '#f9fafb'
+                        e.currentTarget.style.borderColor = '#e5e7eb'
+                      }}
+                    >
+                      <div style={{ fontWeight: 500, marginBottom: 4 }}>
+                        {addr.formatted_address}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#666' }}>
+                        {addr.postal_code && <Tag color="blue">〒{addr.postal_code}</Tag>}
+                        {addr.prefecture && <span style={{ marginRight: 8 }}>{addr.prefecture}</span>}
+                        {addr.city && <span>{addr.city}</span>}
+                        {addr.district && <span>{addr.district}</span>}
+                      </div>
+                    </div>
+                  )}
+                />
+
+                <Button
+                  block
+                  style={{ marginTop: 12 }}
+                  onClick={() => sendMessage('以上都不对，重新输入')}
+                >
+                  以上都不对，重新输入
+                </Button>
+              </>
+            )}
+
+            {isSelected && (
+              <Button type="primary" block disabled style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}>
+                <CheckCircleOutlined /> 已选择
+              </Button>
+            )}
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
   // 渲染物品评估卡片
   const renderItemEvalCard = () => (
     <Card className="ui-card item-eval-card">
@@ -596,6 +870,27 @@ function App() {
       />
     </Card>
   )
+
+  // 渲染地址验证进度
+  const renderAddressVerifyProgress = () => {
+    const addressLabel = pendingAddressData?.addressType === 'from' ? '搬出' : '搬入'
+    return (
+      <Card className="ui-card address-verify-progress-card">
+        <p style={{ marginBottom: 16 }}>收到🎉，接下来我将解析并验证地址准确性</p>
+        <Steps
+          direction="vertical"
+          size="small"
+          current={addressVerifyStep}
+          items={[
+            { title: '解析地址' },
+            { title: '查询地址', description: <Tag color="blue">Google Map</Tag> },
+            { title: '验证地址准确性、完整性、唯一性' },
+            { title: '整合查询结果' }
+          ]}
+        />
+      </Card>
+    )
+  }
 
   // 渲染识别结果
   const renderRecognitionResult = () => {
@@ -653,7 +948,171 @@ function App() {
     )
   }
 
-  // 渲染地址验证卡片
+  // 处理地址选择（从多个候选中选择）
+  const handleAddressSelected = useCallback((addressType, selectedAddress) => {
+    wsRef.current?.send(JSON.stringify({
+      type: 'address_selected',
+      address_type: addressType,
+      address: selectedAddress
+    }))
+
+    // 立即更新嵌入卡片的状态
+    setMessages(prev => prev.map(msg => {
+      if (msg.type === 'address_selection_card' && msg.addressType === addressType) {
+        return { ...msg, confirmed: true }
+      }
+      return msg
+    }))
+  }, [])
+
+  // 处理地址确认
+  const handleAddressConfirmed = useCallback((addressType, confirmed) => {
+    wsRef.current?.send(JSON.stringify({
+      type: 'address_confirmed',
+      address_type: addressType,
+      confirmed: confirmed
+    }))
+
+    // 立即更新嵌入卡片的状态
+    if (confirmed) {
+      setMessages(prev => prev.map(msg => {
+        if (msg.type === 'address_confirm_card' && msg.addressType === addressType) {
+          return { ...msg, confirmed: true }
+        }
+        return msg
+      }))
+    }
+  }, [])
+
+  // 渲染地址选择卡片（多候选地址）
+  const renderAddressSelectionCard = () => {
+    const data = uiComponent.data || {}
+    const addressType = data.address_type || 'from'
+    const candidates = data.candidates || []
+    const originalInput = data.original_input || ''
+    const addressLabel = addressType === 'from' ? '搬出' : '搬入'
+
+    return (
+      <Card className="ui-card address-selection-card">
+        <div className="card-body">
+          <h3><EnvironmentOutlined style={{ marginRight: 8 }} />选择{addressLabel}地址</h3>
+          <p style={{ color: '#666', marginBottom: 16 }}>
+            找到多个匹配地址，请选择正确的一个
+          </p>
+          <p style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
+            您输入的：{originalInput}
+          </p>
+
+          <List
+            className="address-candidate-list"
+            dataSource={candidates}
+            renderItem={(addr, index) => (
+              <div
+                key={index}
+                className="address-candidate-item"
+                style={{
+                  padding: '12px',
+                  marginBottom: 8,
+                  background: '#f9fafb',
+                  borderRadius: 8,
+                  border: '1px solid #e5e7eb',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+                onClick={() => handleAddressSelected(addressType, addr)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = '#f0f5ff'
+                  e.currentTarget.style.borderColor = '#6366f1'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = '#f9fafb'
+                  e.currentTarget.style.borderColor = '#e5e7eb'
+                }}
+              >
+                <div style={{ fontWeight: 500, marginBottom: 4 }}>
+                  {addr.formatted_address}
+                </div>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  {addr.postal_code && <Tag color="blue">〒{addr.postal_code}</Tag>}
+                  {addr.prefecture && <span style={{ marginRight: 8 }}>{addr.prefecture}</span>}
+                  {addr.city && <span>{addr.city}</span>}
+                  {addr.district && <span>{addr.district}</span>}
+                </div>
+              </div>
+            )}
+          />
+
+          <Button
+            block
+            style={{ marginTop: 12 }}
+            onClick={() => sendMessage('以上都不对，重新输入')}
+          >
+            以上都不对，重新输入
+          </Button>
+        </div>
+      </Card>
+    )
+  }
+
+  // 渲染地址确认卡片（单地址确认）
+  const renderAddressConfirmCard = () => {
+    const data = uiComponent.data || {}
+    const addressType = data.address_type || 'from'
+    const addressLabel = addressType === 'from' ? '搬出' : '搬入'
+
+    return (
+      <Card className="ui-card address-confirm-card">
+        <div className="card-body">
+          <h3><EnvironmentOutlined style={{ marginRight: 8 }} />确认{addressLabel}地址</h3>
+          <p style={{ color: '#666', marginBottom: 16 }}>{data.message || '请确认以下地址是否正确'}</p>
+
+          <div style={{
+            padding: '16px',
+            background: '#f9fafb',
+            borderRadius: 8,
+            border: '1px solid #e5e7eb',
+            marginBottom: 16
+          }}>
+            <div style={{ fontWeight: 500, fontSize: 16, marginBottom: 8 }}>
+              {data.formatted_address}
+            </div>
+            <div style={{ fontSize: 13, color: '#666' }}>
+              {data.postal_code && (
+                <div style={{ marginBottom: 4 }}>
+                  <Tag color="blue">〒{data.postal_code}</Tag>
+                </div>
+              )}
+              <div>
+                {data.prefecture && <span>{data.prefecture}</span>}
+                {data.city && <span> {data.city}</span>}
+                {data.district && <span> {data.district}</span>}
+              </div>
+            </div>
+          </div>
+
+          <Space style={{ width: '100%' }} direction="vertical">
+            <Button
+              type="primary"
+              block
+              size="large"
+              icon={<CheckCircleOutlined />}
+              onClick={() => handleAddressConfirmed(addressType, true)}
+            >
+              确认正确
+            </Button>
+            <Button
+              block
+              onClick={() => handleAddressConfirmed(addressType, false)}
+            >
+              不对，重新输入
+            </Button>
+          </Space>
+        </div>
+      </Card>
+    )
+  }
+
+  // 渲染地址验证卡片（旧版兼容）
   const renderAddressVerifyCard = () => {
     const data = uiComponent.data || {}
     const fromAddr = data.from_address || {}
@@ -890,6 +1349,8 @@ function App() {
           </div>
         )}
 
+        {/* 地址选择和确认卡片已嵌入消息流，不再在此独立渲染 */}
+
         {uiComponent.type === 'confirm_card' && (
           <div className="message-wrapper assistant">
             <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
@@ -911,6 +1372,14 @@ function App() {
           </div>
         )}
 
+        {/* 地址验证进度 */}
+        {isVerifyingAddress && (
+          <div className="message-wrapper assistant">
+            <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
+            {renderAddressVerifyProgress()}
+          </div>
+        )}
+
         {/* 待确认的物品卡片（确认后会嵌入消息流，这里只显示未确认的） */}
         {pendingItems.length > 0 && !isRecognizing && (
           <div className="message-wrapper assistant">
@@ -926,8 +1395,8 @@ function App() {
           </div>
         )}
 
-        {/* Quick Options - 在聊天流中 (物品识别进行中或待确认时不显示) */}
-        {!pendingItems.length && !isRecognizing && renderQuickOptions()}
+        {/* Quick Options - 在聊天流中 (物品识别或地址验证进行中时不显示) */}
+        {!pendingItems.length && !isRecognizing && !isVerifyingAddress && renderQuickOptions()}
 
         <div ref={chatEndRef} />
       </Content>

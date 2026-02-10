@@ -154,6 +154,19 @@ class CollectorAgent:
         updated_fields = router_output.updated_fields_status.copy() if router_output.updated_fields_status else fields_status.copy()
         validation_results = {}
 
+        # 处理 skip intent - 用户想跳过当前字段
+        if router_output.intent.primary.value == "skip":
+            skip_field = router_output.response_strategy.guide_to_field or target_field
+            logger.info(f"User wants to skip field: {skip_field}")
+            updated_fields = self._mark_field_skipped(updated_fields, skip_field)
+
+        # 处理 complete intent - 用户表示完成（如 special_notes 的"没有了"）
+        if router_output.intent.primary.value == "complete":
+            # 如果当前正在收集 special_notes 或者用户的消息表示没有更多注意事项
+            if target_field == "special_notes" or "没有" in user_message or "没了" in user_message:
+                updated_fields["special_notes_done"] = True
+                logger.info(f"User indicated completion for special_notes, setting special_notes_done=True")
+
         # 调试：检查 Router 提取了哪些字段
         logger.info(f"Router extracted fields: {list(router_output.extracted_fields.keys())}")
         for field_name, extracted in router_output.extracted_fields.items():
@@ -209,13 +222,28 @@ class CollectorAgent:
         router_guide_to_field = router_output.response_strategy.guide_to_field
         logger.info(f"Router guide_to_field: {router_guide_to_field}")
 
-        # 检查是否有字段需要验证追问
+        # 检查是否有字段需要验证追问或等待用户确认
         validation_override = None
         for field_name, result in validation_results.items():
             if result.status == "needs_verification":
                 validation_override = field_name
                 logger.info(f"Field {field_name} needs verification, will override next_field")
                 break
+
+        # 检查地址是否需要用户确认（verification_status=verified + needs_confirmation=True）
+        # 此时不应跳到下一个字段，而应等待用户确认
+        if not validation_override:
+            for addr_field in ["from_address", "to_address"]:
+                addr_data = updated_fields.get(addr_field, {})
+                if isinstance(addr_data, dict):
+                    if addr_data.get("verification_status") == "verified" and addr_data.get("needs_confirmation"):
+                        validation_override = addr_field
+                        logger.info(f"Address {addr_field} verified but needs user confirmation, will override next_field")
+                        break
+                    elif addr_data.get("verification_status") in ["needs_selection", "needs_more_info", "failed"]:
+                        validation_override = addr_field
+                        logger.info(f"Address {addr_field} status={addr_data.get('verification_status')}, will override next_field")
+                        break
 
         # 检查 to_address 是否是大城市但没有区（可选追问）
         to_address_needs_district = False
@@ -231,22 +259,29 @@ class CollectorAgent:
                     logger.info(f"Major city {city} without district, may ask for more detail")
 
         # 决定 next_field - LLM 驱动优先
+        # 特殊情况：如果用户跳过了当前字段，需要获取下一个字段
+        is_skip_intent = router_output.intent.primary.value == "skip"
+
         if validation_override:
             # 1. 验证结果需要追问 - 最高优先级
             next_field = validation_override
             target_field = validation_override
             logger.info(f"next_field set by validation override: {next_field}")
+        elif is_skip_intent:
+            # 2. 用户跳过了当前字段，获取下一个优先字段
+            next_field = self._get_next_field(updated_fields)
+            logger.info(f"next_field set by skip intent (get_next_priority_field): {next_field}")
         elif to_address_needs_district and router_guide_to_field == "to_address":
-            # 2. Router 说继续问 to_address，且确实需要更多信息
+            # 3. Router 说继续问 to_address，且确实需要更多信息
             next_field = "to_address"
             target_field = "to_address"
             logger.info(f"next_field set by Router (to_address needs district): {next_field}")
         elif router_guide_to_field:
-            # 3. 使用 Router LLM 的决策 - 这是 LLM 驱动的核心
+            # 4. 使用 Router LLM 的决策 - 这是 LLM 驱动的核心
             next_field = router_guide_to_field
             logger.info(f"next_field set by Router LLM guide_to_field: {next_field}")
         else:
-            # 4. Fallback - 仅当 Router 没有输出 guide_to_field 时使用代码逻辑
+            # 5. Fallback - 仅当 Router 没有输出 guide_to_field 时使用代码逻辑
             next_field = self._get_next_field(updated_fields)
             logger.info(f"next_field set by fallback (get_next_priority_field): {next_field}")
 
@@ -395,19 +430,94 @@ class CollectorAgent:
                 if addr_str:
                     try:
                         verified = await self.address_service.verify_address(addr_str)
-                        if verified.is_valid:
-                            # Update parsed value with verified info
+                        logger.info(f"Address verification result: status={verified.verification_status}, "
+                                   f"postal_code={verified.postal_code}, multiple_results={len(verified.multiple_results)}")
+
+                        # Handle different verification statuses per design doc 7.2
+                        if verified.verification_status == "verified":
+                            # 查询成功（唯一地址+邮编）→ 展示地址确认卡片
                             result.parsed_value = {
                                 "value": verified.formatted_address or addr_str,
                                 "postal_code": verified.postal_code,
                                 "prefecture": verified.prefecture,
                                 "city": verified.city,
-                                "district": verified.district
+                                "district": verified.district,
+                                "lat": verified.lat,
+                                "lng": verified.lng,
+                                "verification_status": "verified",
+                                "needs_confirmation": True  # 需要用户确认
                             }
-                            if verified.postal_code and address_type == "from":
+                            result.status = "baseline"
+                            result.message = f"地址已验证: {verified.formatted_address}"
+
+                        elif verified.verification_status == "needs_selection":
+                            # 查询到多个结果 → 让用户选择唯一地址
+                            result.parsed_value = {
+                                "value": addr_str,
+                                "verification_status": "needs_selection",
+                                "multiple_results": verified.multiple_results,
+                                "suggestions": verified.suggestions
+                            }
+                            result.status = "needs_verification"
+                            result.message = "找到多个地址，请选择正确的一个"
+
+                        elif verified.verification_status == "needs_more_info":
+                            # 查询失败/无邮编
+                            # 对于搬入地址(to_address)：有 city 就够了，显示确认卡片
+                            # 对于搬出地址(from_address)：需要邮编，继续追问
+                            if address_type == "to" and verified.city:
+                                # 搬入地址：city 级别足够，显示确认卡片
+                                result.parsed_value = {
+                                    "value": verified.formatted_address or addr_str,
+                                    "prefecture": verified.prefecture,
+                                    "city": verified.city,
+                                    "district": verified.district,
+                                    "lat": verified.lat,
+                                    "lng": verified.lng,
+                                    "verification_status": "verified",  # 改为 verified
+                                    "needs_confirmation": True  # 显示确认卡片
+                                }
                                 result.status = "baseline"
-                            elif verified.city and address_type == "to":
-                                result.status = "baseline"
+                                result.message = f"地址已识别: {verified.formatted_address or verified.city}"
+                            else:
+                                # 搬出地址：需要邮编，继续追问
+                                result.parsed_value = {
+                                    "value": verified.formatted_address or addr_str,
+                                    "prefecture": verified.prefecture,
+                                    "city": verified.city,
+                                    "district": verified.district,
+                                    "verification_status": "needs_more_info",
+                                    "suggestions": verified.suggestions
+                                }
+                                result.status = "needs_verification"
+                                result.message = "地址信息不足，请提供邮编或更详细的地址"
+
+                        elif verified.verification_status == "failed":
+                            # 完全无法识别 → 让用户重新输入
+                            result.parsed_value = {
+                                "value": addr_str,
+                                "verification_status": "failed",
+                                "error": verified.error,
+                                "suggestions": verified.suggestions
+                            }
+                            result.status = "needs_verification"
+                            result.message = verified.error or "地址无法识别，请检查输入"
+
+                        else:
+                            # Fallback: use basic validation result
+                            if verified.is_valid:
+                                result.parsed_value = {
+                                    "value": verified.formatted_address or addr_str,
+                                    "postal_code": verified.postal_code,
+                                    "prefecture": verified.prefecture,
+                                    "city": verified.city,
+                                    "district": verified.district
+                                }
+                                if verified.postal_code and address_type == "from":
+                                    result.status = "baseline"
+                                elif verified.city and address_type == "to":
+                                    result.status = "baseline"
+
                     except Exception as e:
                         logger.warning(f"Address verification failed: {e}")
 
@@ -487,8 +597,20 @@ class CollectorAgent:
             else:
                 if value:
                     updated["from_address"]["value"] = value
-            # R1: Force baseline status if postal_code is present
-            if updated["from_address"].get("postal_code"):
+
+            # Determine status based on verification result
+            verification_status = updated["from_address"].get("verification_status")
+            if verification_status in ["needs_selection", "needs_more_info", "failed"]:
+                # Address needs user action (select from list, provide more info, or retry)
+                updated["from_address"]["status"] = FieldStatus.IN_PROGRESS.value
+            elif verification_status == "verified":
+                # Address verified - check if needs confirmation
+                if updated["from_address"].get("needs_confirmation"):
+                    updated["from_address"]["status"] = FieldStatus.IN_PROGRESS.value
+                else:
+                    updated["from_address"]["status"] = FieldStatus.BASELINE.value
+            elif updated["from_address"].get("postal_code"):
+                # R1: Force baseline status if postal_code is present (legacy fallback)
                 updated["from_address"]["status"] = FieldStatus.BASELINE.value
             else:
                 updated["from_address"]["status"] = field_status
@@ -536,7 +658,23 @@ class CollectorAgent:
                         updated["to_address"]["value"] = existing_value + str(value)
                     else:
                         updated["to_address"]["value"] = value
-            updated["to_address"]["status"] = field_status
+
+            # Determine status based on verification result
+            verification_status = updated["to_address"].get("verification_status")
+            if verification_status in ["needs_selection", "needs_more_info", "failed"]:
+                # Address needs user action
+                updated["to_address"]["status"] = FieldStatus.IN_PROGRESS.value
+            elif verification_status == "verified":
+                # Address verified - check if needs confirmation
+                if updated["to_address"].get("needs_confirmation"):
+                    updated["to_address"]["status"] = FieldStatus.IN_PROGRESS.value
+                else:
+                    updated["to_address"]["status"] = FieldStatus.BASELINE.value
+            elif updated["to_address"].get("city"):
+                # For to_address, city is sufficient for baseline (design doc 7.2)
+                updated["to_address"]["status"] = FieldStatus.BASELINE.value
+            else:
+                updated["to_address"]["status"] = field_status
 
         elif field_name == "from_building_type":
             if "from_address" not in updated or not isinstance(updated["from_address"], dict):
@@ -605,12 +743,26 @@ class CollectorAgent:
         elif field_name == "items":
             if "items" not in updated or not isinstance(updated["items"], dict):
                 updated["items"] = {"list": []}
+
+            # 获取现有物品列表
+            existing_list = updated["items"].get("list", [])
+
+            # 累加新物品到现有列表（而不是覆盖）
             if isinstance(value, dict):
                 if "list" in value:
-                    updated["items"]["list"] = value["list"]
+                    new_items = value["list"]
+                    # 累加：将新物品添加到现有列表
+                    for item in new_items:
+                        if item not in existing_list:
+                            existing_list.append(item)
+                    updated["items"]["list"] = existing_list
                 updated["items"]["status"] = field_status
             elif isinstance(value, list):
-                updated["items"]["list"] = value
+                # 累加：将新物品添加到现有列表
+                for item in value:
+                    if item not in existing_list:
+                        existing_list.append(item)
+                updated["items"]["list"] = existing_list
                 updated["items"]["status"] = field_status
 
         elif field_name == "special_notes":
@@ -793,6 +945,52 @@ class CollectorAgent:
         from app.core.phase_inference import get_completion_info
         info = get_completion_info(fields_status)
         return info["can_submit"]
+
+    def _mark_field_skipped(self, fields_status: Dict[str, Any], field_name: str) -> Dict[str, Any]:
+        """Mark a field as skipped when user chooses to skip"""
+        updated = fields_status.copy()
+
+        if field_name == "move_date":
+            if "move_date" not in updated or not isinstance(updated["move_date"], dict):
+                updated["move_date"] = {}
+            updated["move_date"]["status"] = FieldStatus.SKIPPED.value
+            updated["move_date"]["value"] = "用户跳过"
+            logger.info(f"Marked move_date as skipped")
+
+        elif field_name == "items":
+            if "items" not in updated or not isinstance(updated["items"], dict):
+                updated["items"] = {"list": []}
+            updated["items"]["status"] = FieldStatus.SKIPPED.value
+            logger.info(f"Marked items as skipped")
+
+        elif field_name == "from_building_type":
+            if "from_address" not in updated or not isinstance(updated["from_address"], dict):
+                updated["from_address"] = {}
+            updated["from_address"]["building_type"] = "跳过"
+            logger.info(f"Marked from_building_type as skipped")
+
+        elif field_name == "from_floor_elevator":
+            if "from_floor_elevator" not in updated or not isinstance(updated["from_floor_elevator"], dict):
+                updated["from_floor_elevator"] = {}
+            updated["from_floor_elevator"]["status"] = FieldStatus.SKIPPED.value
+            logger.info(f"Marked from_floor_elevator as skipped")
+
+        elif field_name == "to_floor_elevator":
+            if "to_floor_elevator" not in updated or not isinstance(updated["to_floor_elevator"], dict):
+                updated["to_floor_elevator"] = {}
+            updated["to_floor_elevator"]["status"] = FieldStatus.SKIPPED.value
+            logger.info(f"Marked to_floor_elevator as skipped")
+
+        elif field_name == "packing_service":
+            updated["packing_service"] = "跳过"
+            updated["packing_service_status"] = FieldStatus.SKIPPED.value
+            logger.info(f"Marked packing_service as skipped")
+
+        elif field_name == "special_notes":
+            updated["special_notes_done"] = True
+            logger.info(f"Marked special_notes as done (skipped)")
+
+        return updated
 
     async def _generate_response(
         self,

@@ -34,7 +34,68 @@ def get_ui_component_for_phase(phase: Phase, fields_status: dict) -> dict:
         from_address = fields_status.get("from_address", {})
         to_address = fields_status.get("to_address", {})
 
-        # Check if either address needs verification
+        # Debug logging
+        logger.info(f"[UI_COMPONENT] Phase=ADDRESS, from_address={from_address}")
+        logger.info(f"[UI_COMPONENT] from verification_status={from_address.get('verification_status') if isinstance(from_address, dict) else None}")
+        logger.info(f"[UI_COMPONENT] from needs_confirmation={from_address.get('needs_confirmation') if isinstance(from_address, dict) else None}")
+
+        # Check verification status for each address
+        from_verification = from_address.get("verification_status") if isinstance(from_address, dict) else None
+        to_verification = to_address.get("verification_status") if isinstance(to_address, dict) else None
+
+        # Check if we need to show address selection (multiple results)
+        if from_verification == "needs_selection":
+            return {
+                "type": "address_selection",
+                "data": {
+                    "address_type": "from",
+                    "original_input": from_address.get("value", ""),
+                    "candidates": from_address.get("multiple_results", []),
+                    "message": "请从以下地址中选择正确的搬出地址"
+                }
+            }
+
+        if to_verification == "needs_selection":
+            return {
+                "type": "address_selection",
+                "data": {
+                    "address_type": "to",
+                    "original_input": to_address.get("value", ""),
+                    "candidates": to_address.get("multiple_results", []),
+                    "message": "请从以下地址中选择正确的搬入地址"
+                }
+            }
+
+        # Check if we need to show address confirmation card (verified but needs user confirm)
+        if from_verification == "verified" and from_address.get("needs_confirmation"):
+            return {
+                "type": "address_confirm",
+                "data": {
+                    "address_type": "from",
+                    "formatted_address": from_address.get("value", ""),
+                    "postal_code": from_address.get("postal_code", ""),
+                    "prefecture": from_address.get("prefecture", ""),
+                    "city": from_address.get("city", ""),
+                    "district": from_address.get("district", ""),
+                    "message": "请确认搬出地址是否正确"
+                }
+            }
+
+        if to_verification == "verified" and to_address.get("needs_confirmation"):
+            return {
+                "type": "address_confirm",
+                "data": {
+                    "address_type": "to",
+                    "formatted_address": to_address.get("value", ""),
+                    "postal_code": to_address.get("postal_code", ""),
+                    "prefecture": to_address.get("prefecture", ""),
+                    "city": to_address.get("city", ""),
+                    "district": to_address.get("district", ""),
+                    "message": "请确认搬入地址是否正确"
+                }
+            }
+
+        # Legacy check for status-based verification needed
         from_status = from_address.get("status", "not_collected") if isinstance(from_address, dict) else "not_collected"
         to_status = to_address.get("status", "not_collected") if isinstance(to_address, dict) else "not_collected"
 
@@ -299,6 +360,11 @@ async def process_with_collector(
             updated_fields = chunk["updated_fields"]
             quick_options = chunk.get("quick_options", [])
             collector_metadata = chunk
+            # Debug: 检查 collector 返回的 updated_fields 中的地址验证信息
+            from_addr = updated_fields.get("from_address", {})
+            logger.info(f"[METADATA_CHUNK] from_address = {from_addr}")
+            logger.info(f"[METADATA_CHUNK] verification_status = {from_addr.get('verification_status') if isinstance(from_addr, dict) else None}")
+            logger.info(f"[METADATA_CHUNK] needs_confirmation = {from_addr.get('needs_confirmation') if isinstance(from_addr, dict) else None}")
 
         elif chunk["type"] == "error":
             await websocket.send_json({
@@ -312,15 +378,20 @@ async def process_with_collector(
     await redis_client.add_message(session["session_token"], "user", user_message)
     await redis_client.add_message(session["session_token"], "assistant", full_response)
 
-    # Update session state - 使用 Router LLM 决定的阶段（而非硬编码的 infer_phase）
-    # Router 的 phase_after_update 是 LLM 根据阶段跳转规则决定的
-    llm_decided_phase = router_output.phase_after_update
-    fallback_phase = infer_phase(updated_fields)  # 作为兜底和日志对比
+    # Update session state - 基于实际字段状态的阶段决策
+    # Phase 始终基于实际收集的字段状态来计算（infer_phase）
+    # 这确保了：
+    # 1. 用户可以任意顺序提供信息
+    # 2. 用户可以跳过问题直接说其他内容
+    # 3. Phase 始终反映真实的收集进度
+    # LLM 负责 guide_to_field（引导对话），代码负责 phase（状态一致性）
+    code_inferred_phase = infer_phase(updated_fields)
+    current_phase_value = code_inferred_phase.value
 
-    # 使用 LLM 决定的阶段，但记录与 fallback 的差异用于调试
-    current_phase_value = llm_decided_phase
-    if llm_decided_phase != fallback_phase.value:
-        logger.info(f"Phase decision: LLM={llm_decided_phase}, Fallback={fallback_phase.value} (using LLM)")
+    # 记录 LLM 的 phase 仅用于调试对比
+    llm_decided_phase = router_output.phase_after_update
+    if llm_decided_phase != code_inferred_phase.value:
+        logger.info(f"Phase: LLM suggested {llm_decided_phase}, using inferred {code_inferred_phase.value} based on fields")
 
     completion_info = get_completion_info(updated_fields)
 
@@ -354,7 +425,14 @@ async def process_with_collector(
     # Determine UI component based on phase (convert int to Phase enum for compatibility)
     from app.models.fields import Phase as PhaseEnum
     phase_enum = PhaseEnum(current_phase_value)
+
+    # Debug: 在调用 get_ui_component_for_phase 之前检查 updated_fields
+    from_addr_before = updated_fields.get("from_address", {})
+    logger.info(f"[BEFORE_UI_COMPONENT] current_phase = {current_phase_value}, phase_enum = {phase_enum}")
+    logger.info(f"[BEFORE_UI_COMPONENT] from_address = {from_addr_before}")
+
     ui_component = get_ui_component_for_phase(phase_enum, updated_fields)
+    logger.info(f"[AFTER_UI_COMPONENT] ui_component = {ui_component}")
 
     # Send metadata with enhanced debug info
     await websocket.send_json({
@@ -386,7 +464,7 @@ async def process_with_collector(
             "sub_task": collector_metadata.get("sub_task"),
             "needs_confirmation": collector_metadata.get("needs_confirmation"),
             "validation_results": collector_metadata.get("validation_results", {}),
-            "fallback_phase": fallback_phase.value  # 对比：代码逻辑的阶段
+            "code_inferred_phase": code_inferred_phase.value  # 对比：代码逻辑的阶段
         }
     })
 
@@ -857,6 +935,199 @@ async def handle_items_confirmed(
         })
 
 
+async def handle_address_selected(
+    session: dict,
+    websocket: WebSocket,
+    address_type: str,
+    selected_address: dict,
+    redis_client
+):
+    """
+    Handle user selection from multiple address candidates
+
+    Args:
+        session: Current session dict
+        websocket: WebSocket connection
+        address_type: "from" or "to"
+        selected_address: The selected address data
+        redis_client: Redis client instance
+    """
+    try:
+        logger.info(f"Address selected: type={address_type}, address={selected_address}")
+
+        # Get current fields
+        fields_status = session["fields_status"].copy()
+
+        # Update the address field with selected address
+        field_name = f"{address_type}_address"
+        fields_status[field_name] = {
+            "value": selected_address.get("formatted_address", ""),
+            "postal_code": selected_address.get("postal_code"),
+            "prefecture": selected_address.get("prefecture"),
+            "city": selected_address.get("city"),
+            "district": selected_address.get("district"),
+            "lat": selected_address.get("lat"),
+            "lng": selected_address.get("lng"),
+            "verification_status": "verified",
+            "needs_confirmation": True,  # 选择后仍需确认
+            "status": "in_progress"
+        }
+
+        # Update session
+        current_phase = infer_phase(fields_status)
+
+        await redis_client.set_session(
+            session_token=session["session_token"],
+            session_id=session["session_id"],
+            current_phase=current_phase.value,
+            fields_status=fields_status
+        )
+
+        session["fields_status"] = fields_status
+        session["current_phase"] = current_phase.value
+
+        # Send confirmation request
+        await websocket.send_json({
+            "type": "address_selected",
+            "address_type": address_type,
+            "address": selected_address
+        })
+
+        # Send message to confirm
+        addr_label = "搬出" if address_type == "from" else "搬入"
+        response_msg = f"您选择了：{selected_address.get('formatted_address', '')}\n这个{addr_label}地址正确吗？"
+
+        for char in response_msg:
+            await websocket.send_json({
+                "type": "text_delta",
+                "content": char
+            })
+        await websocket.send_json({"type": "text_done"})
+
+        # Save message
+        await redis_client.add_message(session["session_token"], "assistant", response_msg)
+
+        # Send metadata with confirmation UI
+        completion_info = get_completion_info(fields_status)
+        ui_component = get_ui_component_for_phase(current_phase, fields_status)
+
+        await websocket.send_json({
+            "type": "metadata",
+            "current_phase": current_phase.value,
+            "fields_status": fields_status,
+            "completion": {
+                "can_submit": completion_info["can_submit"],
+                "completion_rate": completion_info["completion_rate"],
+                "next_priority_field": completion_info["next_priority_field"],
+                "missing_fields": completion_info["missing_fields"]
+            },
+            "ui_component": ui_component,
+            "quick_options": ["是的，确认", "不对，重新输入"]
+        })
+
+    except Exception as e:
+        logger.error(f"Handle address selected error: {e}")
+        await websocket.send_json({
+            "type": "error",
+            "code": "address_select_failed",
+            "message": f"地址选择失败: {str(e)}"
+        })
+
+
+async def handle_address_confirmed(
+    session: dict,
+    websocket: WebSocket,
+    address_type: str,
+    confirmed: bool,
+    redis_client
+):
+    """
+    Handle user confirmation/rejection of verified address
+
+    Args:
+        session: Current session dict
+        websocket: WebSocket connection
+        address_type: "from" or "to"
+        confirmed: True if user confirmed, False if rejected
+        redis_client: Redis client instance
+    """
+    try:
+        logger.info(f"Address confirmation: type={address_type}, confirmed={confirmed}")
+
+        # Get current fields
+        fields_status = session["fields_status"].copy()
+        field_name = f"{address_type}_address"
+        address_data = fields_status.get(field_name, {})
+
+        if confirmed:
+            # User confirmed - mark as baseline and clear confirmation flag
+            address_data["needs_confirmation"] = False
+            address_data["status"] = "baseline"
+            fields_status[field_name] = address_data
+
+            # Update session
+            current_phase = infer_phase(fields_status)
+
+            await redis_client.set_session(
+                session_token=session["session_token"],
+                session_id=session["session_id"],
+                current_phase=current_phase.value,
+                fields_status=fields_status
+            )
+
+            session["fields_status"] = fields_status
+            session["current_phase"] = current_phase.value
+
+            # Send confirmation event to frontend
+            await websocket.send_json({
+                "type": "address_confirmed",
+                "address_type": address_type,
+                "address": address_data
+            })
+
+            # 发送 typing 状态，让前端显示加载动画
+            await websocket.send_json({"type": "typing_start"})
+
+            # 使用 LLM 生成自然的回复（通过 Router + Collector 流程）
+            # 构造一个虚拟的用户消息，让 LLM 知道用户确认了地址
+            addr_label = "搬出" if address_type == "from" else "搬入"
+            virtual_message = f"[用户确认了{addr_label}地址]"
+
+            # 调用正常的消息处理流程，让 LLM 生成回复
+            await process_message(virtual_message, session, websocket)
+
+        else:
+            # User rejected - clear the address and ask again
+            fields_status[field_name] = {"status": "not_collected"}
+
+            await redis_client.set_session(
+                session_token=session["session_token"],
+                session_id=session["session_id"],
+                current_phase=session["current_phase"],
+                fields_status=fields_status
+            )
+
+            session["fields_status"] = fields_status
+
+            # 发送 typing 状态，让前端显示加载动画
+            await websocket.send_json({"type": "typing_start"})
+
+            # 使用 LLM 生成自然的回复
+            addr_label = "搬出" if address_type == "from" else "搬入"
+            virtual_message = f"[用户表示{addr_label}地址不正确，需要重新输入]"
+
+            # 调用正常的消息处理流程，让 LLM 生成回复
+            await process_message(virtual_message, session, websocket)
+
+    except Exception as e:
+        logger.error(f"Handle address confirmed error: {e}")
+        await websocket.send_json({
+            "type": "error",
+            "code": "address_confirm_failed",
+            "message": f"地址确认失败: {str(e)}"
+        })
+
+
 async def handle_session_reset(
     session: dict,
     websocket: WebSocket,
@@ -1116,6 +1387,30 @@ async def websocket_endpoint(
                     session=session,
                     websocket=websocket,
                     confirmed_items=updated_items,
+                    redis_client=redis_client
+                )
+
+            elif msg_type == "address_selected":
+                # Handle user selection from multiple address candidates
+                address_type = data.get("address_type", "from")
+                selected_address = data.get("address", {})
+                await handle_address_selected(
+                    session=session,
+                    websocket=websocket,
+                    address_type=address_type,
+                    selected_address=selected_address,
+                    redis_client=redis_client
+                )
+
+            elif msg_type == "address_confirmed":
+                # Handle user confirmation/rejection of verified address
+                address_type = data.get("address_type", "from")
+                confirmed = data.get("confirmed", True)
+                await handle_address_confirmed(
+                    session=session,
+                    websocket=websocket,
+                    address_type=address_type,
+                    confirmed=confirmed,
                     redis_client=redis_client
                 )
 

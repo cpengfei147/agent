@@ -70,12 +70,19 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
     from_status = from_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(from_addr, dict) else FieldStatus.NOT_COLLECTED.value
     to_addr = fields_status.get("to_address", {})
     to_status = to_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(to_addr, dict) else FieldStatus.NOT_COLLECTED.value
+    move_date = fields_status.get("move_date", {})
+    date_status = move_date.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(move_date, dict) else FieldStatus.NOT_COLLECTED.value
+    items = fields_status.get("items", {})
+    items_status = items.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(items, dict) else FieldStatus.NOT_COLLECTED.value
 
     # If nothing has been collected yet, stay in OPENING phase
+    # 用户可以任意顺序提供信息，只要有任何字段被收集，就不再是 OPENING
     all_not_collected = (
         people_status == FieldStatus.NOT_COLLECTED.value and
         from_status == FieldStatus.NOT_COLLECTED.value and
-        to_status == FieldStatus.NOT_COLLECTED.value
+        to_status == FieldStatus.NOT_COLLECTED.value and
+        date_status == FieldStatus.NOT_COLLECTED.value and
+        items_status == FieldStatus.NOT_COLLECTED.value
     )
     if all_not_collected:
         return Phase.OPENING
@@ -140,9 +147,15 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
     if packing_value is None and packing_status != FieldStatus.SKIPPED.value:
         return Phase.OTHER_INFO
 
-    # 5. 检查特殊注意事项（用户点"没有了"才算完成）
+    # 5. 检查特殊注意事项
+    # 改进：如果 special_notes 已有内容，并且其他所有字段都完成了，认为 special_notes 完成
+    # 不再强制要求用户必须说"没有了"
     special_notes_done = fields_status.get("special_notes_done", False)
-    if not special_notes_done:
+    special_notes_list = fields_status.get("special_notes", [])
+    has_special_notes_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
+
+    # 如果用户没有显式完成，但已有内容，且我们已经到了这一步（其他字段都完成了），认为完成
+    if not special_notes_done and not has_special_notes_content:
         return Phase.OTHER_INFO
 
     # 6. 进入阶段6前，检查是否有SKIPPED字段需要复查
@@ -236,9 +249,13 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
     if packing_value is None and packing_status != FieldStatus.SKIPPED.value:
         return "packing_service"
 
-    # 10. Check special_notes (用户点"没有了"才算完成)
+    # 10. Check special_notes
+    # 改进：如果已有内容，认为完成；如果没有内容且未显式完成，才返回 special_notes
     special_notes_done = fields_status.get("special_notes_done", False)
-    if not special_notes_done:
+    special_notes_list = fields_status.get("special_notes", [])
+    has_special_notes_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
+
+    if not special_notes_done and not has_special_notes_content:
         return "special_notes"
 
     # 11. 复查SKIPPED字段（进入阶段6前）
@@ -324,8 +341,11 @@ def get_completion_info(fields_status: Dict[str, Any]) -> Dict[str, Any]:
     packing_value = fields_status.get("packing_service")
     required_checks["packing_service"] = packing_value is not None or packing_status == FieldStatus.SKIPPED.value
 
-    # special_notes - 用户点"没有了"才算完成
-    required_checks["special_notes"] = fields_status.get("special_notes_done", False)
+    # special_notes - 有内容或者用户说"没有了"都算完成
+    special_notes_done = fields_status.get("special_notes_done", False)
+    special_notes_list = fields_status.get("special_notes", [])
+    has_special_notes_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
+    required_checks["special_notes"] = special_notes_done or has_special_notes_content
 
     # Calculate stats
     total = len(required_checks)

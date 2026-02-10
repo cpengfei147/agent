@@ -523,3 +523,88 @@
 .chat-area::-webkit-scrollbar-thumb:hover {
   background: #9ca3af;
 }
+
+/* Address Selection Card */
+.address-selection-card .card-body {
+  padding: 16px;
+}
+
+.address-selection-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #1f2937;
+}
+
+.address-candidate-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.address-candidate-list .ant-list-item {
+  padding: 0;
+  margin-bottom: 8px;
+}
+
+.address-candidate-item {
+  padding: 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.address-candidate-item:hover {
+  background: #f0f5ff;
+  border-color: #6366f1;
+}
+
+.address-candidate-item .address-main {
+  font-weight: 500;
+  margin-bottom: 4px;
+  color: #1f2937;
+}
+
+.address-candidate-item .address-detail {
+  font-size: 12px;
+  color: #666;
+}
+
+/* Address Confirm Card */
+.address-confirm-card .card-body {
+  padding: 16px;
+}
+
+.address-confirm-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #1f2937;
+}
+
+.address-confirm-card .address-display {
+  padding: 16px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  margin-bottom: 16px;
+}
+
+.address-confirm-card .address-main {
+  font-weight: 500;
+  font-size: 16px;
+  margin-bottom: 8px;
+  color: #1f2937;
+}
+
+.address-confirm-card .address-detail {
+  font-size: 13px;
+  color: #666;
+}
+
+.address-confirm-card .ant-btn-lg {
+  height: 44px;
+  border-radius: 12px;
+  font-weight: 500;
+}

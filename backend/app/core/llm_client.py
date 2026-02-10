@@ -56,10 +56,13 @@ class LLMClient(ABC):
 
 
 class OpenAIClient(LLMClient):
-    """OpenAI API client"""
+    """OpenAI API client (also supports DeepSeek and other compatible APIs)"""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
-        self.client = AsyncOpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str = None):
+        if base_url:
+            self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        else:
+            self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
 
     async def chat(
@@ -253,12 +256,8 @@ def create_llm_client(provider: str = "openai") -> LLMClient:
     if provider == "openai":
         return OpenAIClient(
             api_key=settings.openai_api_key,
-            model=settings.openai_model
-        )
-    elif provider == "deepseek":
-        return DeepSeekClient(
-            api_key=settings.openai_api_key,  # Placeholder
-            model="deepseek-chat"
+            model=settings.openai_model,
+            base_url=settings.openai_base_url  # 支持 DeepSeek 等兼容 API
         )
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")

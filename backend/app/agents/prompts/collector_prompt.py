@@ -102,24 +102,38 @@ COLLECTOR_SYSTEM_PROMPT = """
 # 最近对话历史
 {recent_messages}
 
-# 收集原则
-1. 按优先级收集信息：人数 → 地址 → 日期 → 物品 → 其他
-2. 用户提供信息后，简单确认并**自然平滑地**过渡到下一个信息点
-3. 不重复询问已收集的信息
-4. 回复简洁自然，1-2句话
-5. **每次只收集一个信息点**
-6. **重要：每次回复的措辞要有变化**，不要每次都用一样的开场白
-7. 可以适当使用语气词（呢、哦、吧、~）让对话更自然
+# 收集原则（主动引导，但不强制顺序）
+1. **主动引导**：确认用户信息后，自然过渡到下一个未完成的信息
+2. **不强制顺序**：用户想说什么就接受什么，然后继续引导
+3. **⚠️ 绝对不重复询问已收集的信息（status=baseline/ideal的字段）**
+4. 回复简洁自然，1-2句话：确认 + 下一个问题
+5. **重要：每次回复的措辞要有变化**，不要每次都用一样的开场白
+6. 可以适当使用语气词（呢、哦、吧、~）让对话更自然
+
+# 对话节奏
+- 用户提供信息 → 确认 + 自然过渡到下一个未完成的信息
+- 用户问问题 → 回答 + 自然过渡回收集
+- 用户一次说多个信息 → 都确认 + 问还缺的
+
+# ⚠️ 严禁重复询问（最高优先级规则）
+- 查看「已收集信息」中每个字段的 status：
+  - status = "baseline" 或 "ideal" → **已完成，绝对不能再问**
+  - status = "in_progress" → 需要补充信息
+  - status = "not_collected" → 未收集，可以询问
+- **示例**：如果 from_address.status = "baseline"，就不能问"您的搬出地址是？"
+- **示例**：如果 to_address.status = "baseline"，就不能问"您要搬到哪里？"
+- **示例**：如果 move_date.status = "baseline"，就不能问"什么时候搬家？"
 
 # 禁止事项（非常重要！）
 - **禁止**说"下一个问题是..."、"那接下来问您..."、"第X个问题..."
 - **禁止**审问式的语气，不要让用户感觉在填表或考试
-- **禁止**生硬的转折，要像朋友聊天一样自然过渡
+- **禁止**强制用户按特定顺序回答
+- **禁止**生硬的转折，要像朋友聊天一样自然
 
-# 正确的过渡方式
-- 确认后直接引出下一个话题，不要说"问题"
-- 用"对了"、"顺便问下"、"另外"、"说到这个"等自然过渡词
-- 把询问包装成"为了给您准确报价，需要知道..."的形式
+# 自然对话风格
+- 像朋友聊天一样，不是审问或填表
+- 用户说什么就响应什么，不强制拉回到某个话题
+- 确认信息时简洁，不要过度总结
 
 # 字段收集指南
 {field_guide}
@@ -244,7 +258,31 @@ def format_field_guide(target_field: str, fields_status: Dict[str, Any]) -> str:
     elif target_field == "from_address":
         from_addr = fields_status.get("from_address", {})
         if isinstance(from_addr, dict):
-            if from_addr.get("value") and not from_addr.get("postal_code"):
+            verification_status = from_addr.get("verification_status")
+            needs_confirmation = from_addr.get("needs_confirmation")
+
+            # 地址验证成功，等待用户确认
+            if verification_status == "verified" and needs_confirmation:
+                guide_parts.append("- 【重要】地址已验证成功，正在等待用户通过确认卡片确认")
+                guide_parts.append("- 回复内容：简短告知用户请查看确认卡片")
+                guide_parts.append("- **禁止**：不要在文字中重复显示地址或邮编，卡片中已经有了")
+                guide_parts.append("- **禁止**：不要询问搬入地址，不要跳到下一个问题")
+                guide_parts.append("- 示例：「收到，请确认下方的地址是否正确~」")
+            # 地址需要用户选择（多个结果）
+            elif verification_status == "needs_selection":
+                guide_parts.append("- 【重要】找到多个匹配地址，等待用户选择")
+                guide_parts.append("- 回复内容：告知用户找到多个地址，请从卡片中选择正确的")
+                guide_parts.append("- **禁止**：不要询问其他信息")
+            # 地址需要补充信息
+            elif verification_status == "needs_more_info":
+                guide_parts.append("- 地址信息不足，需要用户补充更详细的地址或邮编")
+                guide_parts.append("- 询问更具体的街道名或邮编")
+            # 地址验证失败
+            elif verification_status == "failed":
+                guide_parts.append("- 地址无法识别，请用户重新输入")
+                guide_parts.append("- 友好地请用户检查地址是否正确")
+            # 正常收集流程
+            elif from_addr.get("value") and not from_addr.get("postal_code"):
                 guide_parts.append("- 已有地址但缺少邮编，请询问邮编")
             elif not from_addr.get("building_type"):
                 guide_parts.append("- 需要询问建筑类型（マンション/アパート/戸建て/その他）")
@@ -256,9 +294,33 @@ def format_field_guide(target_field: str, fields_status: Dict[str, Any]) -> str:
     elif target_field == "to_address":
         to_addr = fields_status.get("to_address", {})
         if isinstance(to_addr, dict):
+            verification_status = to_addr.get("verification_status")
+            needs_confirmation = to_addr.get("needs_confirmation")
             status = to_addr.get("status", "not_collected")
             city = to_addr.get("city", "")
-            if status == "baseline" and city and not to_addr.get("district"):
+
+            # 地址验证成功，等待用户确认
+            if verification_status == "verified" and needs_confirmation:
+                guide_parts.append("- 【重要】搬入地址已验证成功，正在等待用户通过确认卡片确认")
+                guide_parts.append("- 回复内容：简短告知用户请查看确认卡片")
+                guide_parts.append("- **禁止**：不要在文字中重复显示地址或邮编，卡片中已经有了")
+                guide_parts.append("- **禁止**：不要询问其他信息，不要跳到下一个问题")
+                guide_parts.append("- 示例：「收到，请确认下方的搬入地址~」")
+            # 地址需要用户选择（多个结果）
+            elif verification_status == "needs_selection":
+                guide_parts.append("- 【重要】找到多个匹配地址，等待用户选择")
+                guide_parts.append("- 回复内容：告知用户找到多个地址，请从卡片中选择正确的")
+                guide_parts.append("- **禁止**：不要询问其他信息")
+            # 地址需要补充信息
+            elif verification_status == "needs_more_info":
+                guide_parts.append("- 搬入地址信息不足，需要用户补充更详细的地址")
+                guide_parts.append("- 询问更具体的城市区域")
+            # 地址验证失败
+            elif verification_status == "failed":
+                guide_parts.append("- 搬入地址无法识别，请用户重新输入")
+                guide_parts.append("- 友好地请用户检查地址是否正确")
+            # 正常收集流程
+            elif status == "baseline" and city and not to_addr.get("district"):
                 guide_parts.append(f"- 已有城市信息：{city}")
                 guide_parts.append("- 可以询问更详细的区，但这是可选的")
                 guide_parts.append("- 提供该城市常见的区作为选项")
@@ -275,11 +337,22 @@ def format_field_guide(target_field: str, fields_status: Dict[str, Any]) -> str:
         if isinstance(move_date, dict):
             has_month = move_date.get("month") is not None
             has_day_or_period = move_date.get("day") is not None or move_date.get("period") is not None
+            date_value = move_date.get("value", "")
+
+            # 检查 value 中是否包含相对月份表达（即使 month 字段为空）
+            has_relative_month = any(keyword in str(date_value) for keyword in ["这个月", "下个月", "再下个月", "本月"])
 
             if has_month and not has_day_or_period:
-                guide_parts.append(f"- 已有月份（{move_date.get('month')}月），但缺少旬或具体日期")
+                guide_parts.append(f"- 【重要】用户已说了{move_date.get('month')}月，但缺少旬或具体日期")
                 guide_parts.append("- 必须询问：是上旬、中旬还是下旬？或者有具体日期吗？")
-                guide_parts.append("- 这是达到底线的必要条件")
+                guide_parts.append("- **不要重复问月份**，直接问具体日期或旬")
+                guide_parts.append("- 示例：「好的{month}月~ 大概是上旬、中旬还是下旬呢？」".format(month=move_date.get('month')))
+            elif has_relative_month and not has_day_or_period:
+                # value 包含相对月份表达但 month 可能未正确设置
+                guide_parts.append(f"- 【重要】用户已说了「{date_value}」，但缺少旬或具体日期")
+                guide_parts.append("- 必须询问：是上旬、中旬还是下旬？或者有具体日期吗？")
+                guide_parts.append("- **不要重复问月份**，直接问具体日期或旬")
+                guide_parts.append(f"- 示例：「好的{date_value}~ 大概是上旬、中旬还是下旬呢？」")
             elif move_date.get("value") and has_day_or_period and not move_date.get("time_slot"):
                 guide_parts.append("- 已有日期，询问时间段（上午/下午）")
             else:
@@ -389,16 +462,50 @@ def build_collector_prompt(
     else:
         formatted_messages = "（无历史对话）"
 
-    # Format fields status (simplified)
+    # Format fields status (保留关键信息)
     simplified_fields = {}
     for key, value in fields_status.items():
         if isinstance(value, dict):
             status = value.get("status", "not_collected")
-            val = value.get("value")
-            if val is not None:
-                simplified_fields[key] = {"value": val, "status": status}
-            else:
-                simplified_fields[key] = {"status": status}
+            entry = {"status": status}
+
+            # 基本值
+            if value.get("value") is not None:
+                entry["value"] = value["value"]
+
+            # 地址相关的关键字段
+            if value.get("postal_code"):
+                entry["postal_code"] = value["postal_code"]
+            if value.get("city"):
+                entry["city"] = value["city"]
+            if value.get("building_type"):
+                entry["building_type"] = value["building_type"]
+            if value.get("verification_status"):
+                entry["verification_status"] = value["verification_status"]
+            if value.get("needs_confirmation") is not None:
+                entry["needs_confirmation"] = value["needs_confirmation"]
+
+            # 日期相关
+            if value.get("year"):
+                entry["year"] = value["year"]
+            if value.get("month"):
+                entry["month"] = value["month"]
+            if value.get("day"):
+                entry["day"] = value["day"]
+            if value.get("period"):
+                entry["period"] = value["period"]
+
+            # 楼层电梯
+            if value.get("floor"):
+                entry["floor"] = value["floor"]
+            if value.get("has_elevator") is not None:
+                entry["has_elevator"] = value["has_elevator"]
+
+            # 物品列表
+            if value.get("list"):
+                entry["list_count"] = len(value["list"])
+
+            simplified_fields[key] = entry
         else:
             simplified_fields[key] = value
 
