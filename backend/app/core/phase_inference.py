@@ -148,10 +148,13 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
         return Phase.OTHER_INFO
 
     # 5. 检查特殊注意事项
-    # 必须用户显式表示完成（说"没有了"或点击"没有了"）才算完成
-    # 这确保用户有机会添加特殊注意事项
+    # 完成条件：用户说了"没有了" 或者 已经有内容（用户选了一些选项）
+    # 注意：之前的bug是"没有了"被当作内容收集，现在已在collector中过滤掉
     special_notes_done = fields_status.get("special_notes_done", False)
-    if not special_notes_done:
+    special_notes_list = fields_status.get("special_notes", [])
+    has_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
+
+    if not special_notes_done and not has_content:
         return Phase.OTHER_INFO
 
     # 6. 进入阶段6前，检查是否有SKIPPED字段需要复查
@@ -245,9 +248,12 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
     if packing_value is None and packing_status != FieldStatus.SKIPPED.value:
         return "packing_service"
 
-    # 10. Check special_notes - 必须用户显式完成
+    # 10. Check special_notes - 有内容或用户说"没有了"都算完成
     special_notes_done = fields_status.get("special_notes_done", False)
-    if not special_notes_done:
+    special_notes_list = fields_status.get("special_notes", [])
+    has_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
+
+    if not special_notes_done and not has_content:
         return "special_notes"
 
     # 11. 复查SKIPPED字段（进入阶段6前）
@@ -333,8 +339,11 @@ def get_completion_info(fields_status: Dict[str, Any]) -> Dict[str, Any]:
     packing_value = fields_status.get("packing_service")
     required_checks["packing_service"] = packing_value is not None or packing_status == FieldStatus.SKIPPED.value
 
-    # special_notes - 必须用户显式完成（说"没有了"）
-    required_checks["special_notes"] = fields_status.get("special_notes_done", False)
+    # special_notes - 有内容或用户说"没有了"都算完成
+    special_notes_done = fields_status.get("special_notes_done", False)
+    special_notes_list = fields_status.get("special_notes", [])
+    has_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
+    required_checks["special_notes"] = special_notes_done or has_content
 
     # Calculate stats
     total = len(required_checks)
