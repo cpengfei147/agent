@@ -101,6 +101,18 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
     if not is_done(from_status) or not is_done(to_status):
         return Phase.ADDRESS
 
+    # 搬出地址确认后，追问建筑类型和户型（仍在阶段2）
+    building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
+    if building_type is None:
+        return Phase.ADDRESS  # 建筑类型未收集，停留在阶段2
+
+    # 公寓类建筑需要户型信息
+    apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
+    if building_type in apartment_types:
+        room_type = from_addr.get("room_type") if isinstance(from_addr, dict) else None
+        if room_type is None:
+            return Phase.ADDRESS  # 户型未收集，停留在阶段2
+
     # Check date
     move_date = fields_status.get("move_date", {})
     date_status = move_date.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(move_date, dict) else FieldStatus.NOT_COLLECTED.value
@@ -116,18 +128,14 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
         return Phase.ITEMS
 
     # Check other info - 阶段5的字段按顺序检查
-    # 需要询问楼层电梯的建筑类型（公寓类）
-    apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
-
-    # 1. 检查搬出地址建筑类型（必须询问）
-    building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
-    if building_type is None:
-        return Phase.OTHER_INFO
+    # 注意：建筑类型和户型已在阶段2收集，这里只检查楼层电梯等信息
 
     # 判断是否需要询问楼层电梯（只有公寓类建筑需要）
-    needs_floor_info = building_type in apartment_types
+    apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
+    building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
+    needs_floor_info = building_type in apartment_types if building_type else False
 
-    # 2. 检查搬出楼层电梯（只有公寓类建筑需要询问）
+    # 1. 检查搬出楼层电梯（只有公寓类建筑需要询问）
     if needs_floor_info:
         from_floor = fields_status.get("from_floor_elevator", {})
         floor_status = from_floor.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(from_floor, dict) else FieldStatus.NOT_COLLECTED.value
@@ -201,6 +209,18 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
     if not is_done(from_status):
         return "from_address"
 
+    # 2.1 搬出地址确认后，追问建筑类型
+    building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
+    if building_type is None:
+        return "from_building_type"
+
+    # 2.2 公寓类建筑需要追问户型
+    apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
+    if building_type in apartment_types:
+        room_type = from_addr.get("room_type") if isinstance(from_addr, dict) else None
+        if room_type is None:
+            return "from_room_type"
+
     # 3. Check to_address
     to_addr = fields_status.get("to_address", {})
     to_status = to_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(to_addr, dict) else FieldStatus.NOT_COLLECTED.value
@@ -219,16 +239,13 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
     if not is_done(items_status):
         return "items"
 
-    # 6. Check from_building_type (必须询问)
-    building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
-    if building_type is None:
-        return "from_building_type"
-
-    # 需要询问楼层电梯的建筑类型（公寓类）
+    # 6. 楼层电梯检查（建筑类型和户型已在阶段2收集）
+    # 获取建筑类型用于判断是否需要楼层电梯信息
     apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
-    from_needs_floor = building_type in apartment_types
+    building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
+    from_needs_floor = building_type in apartment_types if building_type else False
 
-    # 7. Check from_floor_elevator (只有公寓类建筑需要询问，条件必填)
+    # 6.1 Check from_floor_elevator (只有公寓类建筑需要询问，条件必填)
     if from_needs_floor:
         from_floor = fields_status.get("from_floor_elevator", {})
         floor_status = from_floor.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(from_floor, dict) else FieldStatus.NOT_COLLECTED.value
@@ -302,17 +319,23 @@ def get_completion_info(fields_status: Dict[str, Any]) -> Dict[str, Any]:
         ),
     }
 
-    # 阶段5字段 - 必须询问（可跳过）才能提交
+    # 阶段2额外字段 - 搬出地址确认后追问
     from_addr = fields_status.get("from_address", {})
-    # 需要询问楼层电梯的建筑类型（公寓类）
     apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
 
-    # from_building_type - 必须询问
+    # from_building_type - 搬出地址确认后必须询问
     building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
     required_checks["from_building_type"] = building_type is not None
 
+    # from_room_type - 公寓类建筑需要询问户型
+    if building_type in apartment_types:
+        room_type = from_addr.get("room_type") if isinstance(from_addr, dict) else None
+        required_checks["from_room_type"] = room_type is not None
+    else:
+        required_checks["from_room_type"] = True  # 非公寓类建筑不需要户型
+
+    # 阶段5字段 - 楼层电梯等
     # 判断是否需要询问楼层电梯（只有公寓类建筑需要）
-    # 注意：如果 building_type 还未收集，需要等待收集后才能判断
     needs_floor_info = building_type in apartment_types if building_type else None  # None = 未知
 
     # from_floor_elevator - 只有公寓类建筑需要询问

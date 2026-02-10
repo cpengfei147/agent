@@ -83,9 +83,13 @@ async def get_smart_quick_options(
     if next_field == "people_count":
         return ["单身", "2~3人", "4人以上"]
 
-    # 搬出地址建筑类型：固定选项
+    # 搬出地址建筑类型：固定选项（6个）
     if next_field == "from_building_type":
-        return ["マンション", "アパート", "戸建て", "タワーマンション"]
+        return ["マンション", "アパート", "戸建て", "タワーマンション", "その他", "公共の建物"]
+
+    # 搬出地址户型：固定选项
+    if next_field == "from_room_type":
+        return ["1R/1K", "1DK/1LDK", "2DK/2LDK", "3LDK以上"]
 
     # 搬出楼层电梯：固定选项
     if next_field == "from_floor_elevator":

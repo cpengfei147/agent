@@ -40,8 +40,13 @@ FIELD_COLLECTION_PROMPTS = {
     },
     "from_building_type": {
         "goal": "询问搬出地址的建筑类型",
-        "options": ["マンション", "アパート", "戸建て", "その他"],
-        "note": "物品收集完后第一个问题"
+        "options": ["マンション", "アパート", "戸建て", "タワーマンション", "その他", "公共の建物"],
+        "note": "搬出地址确认后第一个追问"
+    },
+    "from_room_type": {
+        "goal": "询问搬出地址的户型",
+        "examples": ["1R", "1K", "1DK", "1LDK", "2DK", "2LDK", "3LDK", "4LDK"],
+        "note": "搬出地址建筑类型确认后追问，公寓类建筑需要户型信息"
     },
     "from_floor_elevator": {
         "goal": "询问搬出地址的楼层和电梯情况",
@@ -376,14 +381,19 @@ def format_field_guide(target_field: str, fields_status: Dict[str, Any]) -> str:
             guide_parts.append("- UI会显示物品评估组件供用户操作")
 
     elif target_field == "from_building_type":
-        # 检查是否刚从物品收集阶段过渡来
-        items = fields_status.get("items", {})
-        items_done = isinstance(items, dict) and items.get("status") in ["baseline", "ideal"]
-        if items_done:
-            guide_parts.append("- 【阶段过渡】刚完成物品收集，用友好的过渡语引出下一个问题")
-        guide_parts.append("- 只问搬出地址的建筑类型这一个问题")
-        guide_parts.append("- **重要：不要同时问楼层、电梯或其他信息**")
-        guide_parts.append("- 选项：マンション / アパート / 戸建て / その他")
+        # 搬出地址确认后追问建筑类型
+        guide_parts.append("- 【搬出地址确认后】追问建筑物类型")
+        guide_parts.append("- 用数字选项方式询问，告诉用户回复数字即可")
+        guide_parts.append("- 1. マンション  2. アパート  3. 戸建て  4. タワーマンション(20階以上)  5. その他  6. 公共の建物")
+        guide_parts.append("- **重要：不要同时问户型、楼层或其他信息**")
+
+    elif target_field == "from_room_type":
+        # 建筑类型确认后追问户型
+        guide_parts.append("- 【建筑类型确认后】追问户型")
+        guide_parts.append("- 询问现在的户型是什么，例如 3LDK")
+        guide_parts.append("- 常见户型：1R, 1K, 1DK, 1LDK, 2DK, 2LDK, 3LDK, 4LDK")
+        guide_parts.append("- 用户可以直接输入户型，如 2LDK")
+        guide_parts.append("- **重要：这是搬出地址的最后一个问题，问完后继续收集搬入地址**")
 
     elif target_field == "from_floor_elevator":
         floor_info = fields_status.get("from_floor_elevator", {})

@@ -85,6 +85,7 @@ ROUTER_SYSTEM_PROMPT = """# 角色
   - parsed_value 应该是对象：{{"value": "地址", "city": "xxx市"}}
   - 有市区町村时 needs_verification=false，否则 needs_verification=true
 - from_building_type: 搬出建筑类型（マンション/アパート/戸建て/タワーマンション/その他/公共の建物）
+- from_room_type: 搬出户型（1R/1K/1DK/1LDK/2DK/2LDK/3LDK/4LDK等）
 - to_building_type: 搬入建筑类型
 - move_date: 搬家日期（解析为具体日期或范围）
 - move_time_slot: 搬家时段（上午/下午/没有指定）
@@ -138,6 +139,19 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - from_building_type: {{"raw_value": "公寓", "parsed_value": "マンション", "needs_verification": false, "confidence": 0.9}}
 - from_floor: {{"raw_value": "5楼", "parsed_value": 5, "needs_verification": false, "confidence": 0.9}}
 - from_has_elevator: {{"raw_value": "有电梯", "parsed_value": true, "needs_verification": false, "confidence": 0.9}}
+
+## 示例5.1：建筑类型（数字选择）
+上下文：Agent 询问建筑类型，列出了 1-6 的选项
+用户说："1" 或 "マンション"
+应提取：
+- from_building_type: {{"raw_value": "1", "parsed_value": "マンション", "needs_verification": false, "confidence": 0.9}}
+注意：如果用户回复数字，根据上下文中的选项列表转换为对应的建筑类型
+
+## 示例5.2：户型
+用户说："3LDK" 或 "2LDK" 或 "1R"
+应提取：
+- from_room_type: {{"raw_value": "3LDK", "parsed_value": "3LDK", "needs_verification": false, "confidence": 0.9}}
+注意：日本户型格式为 数字+字母（R/K/DK/LDK/SLDK等），直接保留原值
 
 ## 示例6：搬家日期（具体日期）
 用户说："3月15日搬家"

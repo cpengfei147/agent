@@ -526,6 +526,22 @@ class CollectorAgent:
         elif field_name in ["from_building_type", "to_building_type"]:
             return validator.validate_building_type(value)
 
+        elif field_name == "from_room_type":
+            # 户型验证 - 简单检查值是否存在
+            if value and str(value).strip():
+                return ValidationResult(
+                    is_valid=True,
+                    parsed_value=str(value).strip().upper(),  # 转为大写，如 3ldk -> 3LDK
+                    status="ideal",
+                    message=f"户型: {value}"
+                )
+            return ValidationResult(
+                is_valid=False,
+                parsed_value=None,
+                status="invalid",
+                message="户型未提供"
+            )
+
         elif field_name == "move_date":
             return validator.validate_move_date(value)
 
@@ -680,6 +696,11 @@ class CollectorAgent:
             if "from_address" not in updated or not isinstance(updated["from_address"], dict):
                 updated["from_address"] = {}
             updated["from_address"]["building_type"] = value
+
+        elif field_name == "from_room_type":
+            if "from_address" not in updated or not isinstance(updated["from_address"], dict):
+                updated["from_address"] = {}
+            updated["from_address"]["room_type"] = value
 
         elif field_name == "to_building_type":
             if "to_address" not in updated or not isinstance(updated["to_address"], dict):
