@@ -769,15 +769,25 @@ class CollectorAgent:
             if "special_notes" not in updated:
                 updated["special_notes"] = []
 
+            # 完成标志词 - 这些不是实际的特殊需求，而是表示收集完成
+            completion_keywords = ["没有了", "没有", "没了", "无", "暂时没有", "就这些", "没有其他"]
+
             # LLM 驱动：special_notes_done 由 Router LLM 的 intent 判断
-            # 这里只添加实际的特殊需求
+            # 这里只添加实际的特殊需求，过滤掉完成标志词
             if isinstance(value, list):
                 for v in value:
-                    if v and v not in updated["special_notes"]:
+                    if v and v not in updated["special_notes"] and v not in completion_keywords:
                         updated["special_notes"].append(v)
+                    elif v in completion_keywords:
+                        # 用户说了完成标志词，设置 special_notes_done
+                        updated["special_notes_done"] = True
+                        logger.info(f"Special notes completion keyword detected: {v}")
             else:
-                if value and value not in updated["special_notes"]:
+                if value and value not in updated["special_notes"] and value not in completion_keywords:
                     updated["special_notes"].append(value)
+                elif value in completion_keywords:
+                    updated["special_notes_done"] = True
+                    logger.info(f"Special notes completion keyword detected: {value}")
 
             # Remove duplicates while preserving order
             updated["special_notes"] = list(dict.fromkeys(updated["special_notes"]))

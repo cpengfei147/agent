@@ -112,7 +112,8 @@ async def get_smart_quick_options(
         items = fields_status.get("items", {})
         if isinstance(items, dict) and items.get("list"):
             return ["继续添加", "没有其他行李了"]
-        # 没有物品时不显示快捷选项，让用户上传照片或输入
+        # 没有物品时不显示快捷选项，让用户使用上传图片或从目录选择
+        return []
 
     # === 其他所有场景由LLM智能判断 ===
 

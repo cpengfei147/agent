@@ -148,14 +148,10 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
         return Phase.OTHER_INFO
 
     # 5. 检查特殊注意事项
-    # 改进：如果 special_notes 已有内容，并且其他所有字段都完成了，认为 special_notes 完成
-    # 不再强制要求用户必须说"没有了"
+    # 必须用户显式表示完成（说"没有了"或点击"没有了"）才算完成
+    # 这确保用户有机会添加特殊注意事项
     special_notes_done = fields_status.get("special_notes_done", False)
-    special_notes_list = fields_status.get("special_notes", [])
-    has_special_notes_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
-
-    # 如果用户没有显式完成，但已有内容，且我们已经到了这一步（其他字段都完成了），认为完成
-    if not special_notes_done and not has_special_notes_content:
+    if not special_notes_done:
         return Phase.OTHER_INFO
 
     # 6. 进入阶段6前，检查是否有SKIPPED字段需要复查
@@ -249,13 +245,9 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
     if packing_value is None and packing_status != FieldStatus.SKIPPED.value:
         return "packing_service"
 
-    # 10. Check special_notes
-    # 改进：如果已有内容，认为完成；如果没有内容且未显式完成，才返回 special_notes
+    # 10. Check special_notes - 必须用户显式完成
     special_notes_done = fields_status.get("special_notes_done", False)
-    special_notes_list = fields_status.get("special_notes", [])
-    has_special_notes_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
-
-    if not special_notes_done and not has_special_notes_content:
+    if not special_notes_done:
         return "special_notes"
 
     # 11. 复查SKIPPED字段（进入阶段6前）
@@ -341,11 +333,8 @@ def get_completion_info(fields_status: Dict[str, Any]) -> Dict[str, Any]:
     packing_value = fields_status.get("packing_service")
     required_checks["packing_service"] = packing_value is not None or packing_status == FieldStatus.SKIPPED.value
 
-    # special_notes - 有内容或者用户说"没有了"都算完成
-    special_notes_done = fields_status.get("special_notes_done", False)
-    special_notes_list = fields_status.get("special_notes", [])
-    has_special_notes_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
-    required_checks["special_notes"] = special_notes_done or has_special_notes_content
+    # special_notes - 必须用户显式完成（说"没有了"）
+    required_checks["special_notes"] = fields_status.get("special_notes_done", False)
 
     # Calculate stats
     total = len(required_checks)

@@ -26,6 +26,7 @@ const MSG_TYPES = {
   ITEMS_CONFIRMED: 'items_confirmed',
   ADDRESS_SELECTED: 'address_selected',
   ADDRESS_CONFIRMED: 'address_confirmed',
+  TYPING_START: 'typing_start',
   ERROR: 'error'
 }
 
@@ -174,6 +175,11 @@ function App() {
         sessionTokenRef.current = data.session_token
         localStorage.setItem('erabu_session_token', data.session_token)
         if (data.current_phase !== undefined) setCurrentPhase(data.current_phase)
+        break
+
+      case MSG_TYPES.TYPING_START:
+        // 显示加载状态，表示 Agent 正在处理
+        setIsLoading(true)
         break
 
       case MSG_TYPES.TEXT_DELTA:
