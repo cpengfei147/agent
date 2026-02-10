@@ -183,12 +183,24 @@ class CollectorAgent:
                 logger.info(f"Router决策: 用户跳过 phase {current_phase_before.value} ({skip_field}), 进入 phase {router_phase_after}")
                 updated_fields = self._mark_field_skipped(updated_fields, skip_field)
 
-        # 处理 complete intent - 用户表示完成（如 special_notes 的"没有了"）
+        # 处理 complete intent - 用户表示完成
+        # 根据当前阶段判断是哪个字段完成，而不是硬编码关键词匹配
         if router_output.intent.primary.value == "complete":
-            # 如果当前正在收集 special_notes 或者用户的消息表示没有更多注意事项
-            if target_field == "special_notes" or "没有" in user_message or "没了" in user_message:
+            if current_phase_before.value == 5 or target_field == "special_notes":
+                # 阶段5 或 target_field 是 special_notes：特殊注意事项收集完成
                 updated_fields["special_notes_done"] = True
-                logger.info(f"User indicated completion for special_notes, setting special_notes_done=True")
+                logger.info(f"User indicated completion for special_notes in phase {current_phase_before.value}, setting special_notes_done=True")
+            elif current_phase_before.value == 4:
+                # 阶段4：物品收集完成，由 handle_items_confirmed 管理，这里不做特殊处理
+                logger.info(f"User indicated items collection complete in phase 4")
+
+        # 后备检查：如果用户在阶段5说了完成标志词，但 Router 没有识别为 intent=complete
+        # 通过直接检测用户消息来确保 special_notes_done 被正确设置
+        if current_phase_before.value == 5 and not updated_fields.get("special_notes_done", False):
+            completion_patterns = ["没有了", "就这些", "没有其他", "没更多", "没什么", "暂时没有"]
+            if any(pattern in user_message for pattern in completion_patterns):
+                updated_fields["special_notes_done"] = True
+                logger.info(f"Backup: Set special_notes_done=True based on user message: {user_message[:50]}")
 
         # 调试：检查 Router 提取了哪些字段
         logger.info(f"Router extracted fields: {list(router_output.extracted_fields.keys())}")
@@ -781,14 +793,11 @@ class CollectorAgent:
                 updated["to_floor_elevator"]["status"] = field_status
 
         elif field_name == "packing_service":
-            # 处理跳过情况 - 注意：不包含"没有"，避免与 special_notes 的"没有了"混淆
-            skip_keywords = ["不需要", "不用", "自己打包", "跳过"]
-            if value and any(kw in str(value) for kw in skip_keywords):
-                updated["packing_service"] = value
-                updated["packing_service_status"] = FieldStatus.SKIPPED.value
-            else:
-                updated["packing_service"] = value
-                updated["packing_service_status"] = field_status
+            # 不再使用硬编码的 skip_keywords 判断
+            # "自己打包"、"不需要" 等都是有效答案，应该显示绿色✓
+            # 真正的跳过由 Router intent="skip" 统一处理
+            updated["packing_service"] = value
+            updated["packing_service_status"] = field_status
 
         elif field_name == "items":
             if "items" not in updated or not isinstance(updated["items"], dict):
@@ -820,24 +829,43 @@ class CollectorAgent:
                 updated["special_notes"] = []
 
             # 完成标志词 - 这些不是实际的特殊需求，而是表示收集完成
-            completion_keywords = ["没有了", "没有", "没了", "无", "暂时没有", "就这些", "没有其他"]
+            # 扩展列表包含更多常见的完成表达
+            completion_keywords = [
+                "没有了", "没有", "没了", "无", "暂时没有", "就这些", "没有其他",
+                "没有其他行李了", "没有更多了", "就这样", "没有其他了", "没更多了",
+                "没什么了", "差不多了", "就这些了", "好了"
+            ]
+
+            # 判断是否是完成消息的函数 - 更宽松的匹配
+            def is_completion_message(v):
+                if not v:
+                    return False
+                v_str = str(v).strip()
+                # 直接匹配
+                if v_str in completion_keywords:
+                    return True
+                # 包含匹配 - 用于捕获类似 "没有其他行李了" 的变体
+                completion_patterns = ["没有了", "就这些", "没有其他", "没更多", "没什么"]
+                if any(pattern in v_str for pattern in completion_patterns):
+                    return True
+                return False
 
             # LLM 驱动：special_notes_done 由 Router LLM 的 intent 判断
             # 这里只添加实际的特殊需求，过滤掉完成标志词
             if isinstance(value, list):
                 for v in value:
-                    if v and v not in updated["special_notes"] and v not in completion_keywords:
-                        updated["special_notes"].append(v)
-                    elif v in completion_keywords:
+                    if is_completion_message(v):
                         # 用户说了完成标志词，设置 special_notes_done
                         updated["special_notes_done"] = True
-                        logger.info(f"Special notes completion keyword detected: {v}")
+                        logger.info(f"Special notes completion message detected: {v}")
+                    elif v and v not in updated["special_notes"]:
+                        updated["special_notes"].append(v)
             else:
-                if value and value not in updated["special_notes"] and value not in completion_keywords:
-                    updated["special_notes"].append(value)
-                elif value in completion_keywords:
+                if is_completion_message(value):
                     updated["special_notes_done"] = True
-                    logger.info(f"Special notes completion keyword detected: {value}")
+                    logger.info(f"Special notes completion message detected: {value}")
+                elif value and value not in updated["special_notes"]:
+                    updated["special_notes"].append(value)
 
             # Remove duplicates while preserving order
             updated["special_notes"] = list(dict.fromkeys(updated["special_notes"]))

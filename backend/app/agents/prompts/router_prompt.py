@@ -197,17 +197,40 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 应提取：
 - special_notes: {{"raw_value": "有宜家家具", "parsed_value": ["有宜家家具"], "needs_verification": false, "confidence": 0.9}}
 
-## 示例12：用户说没有更多注意事项
-用户说："没有了"或点击快捷选项"没有了"
-应提取：
-- special_notes: {{"raw_value": "没有了", "parsed_value": ["没有了"], "needs_verification": false, "confidence": 0.9}}
-并且 intent.primary 应为 "complete"
+## 示例12：用户表示没有更多了（完成消息，不提取为字段值！）
+⚠️ **重要：完成消息不是字段值，不要提取到 extracted_fields 中**
+
+上下文：阶段4，Agent 询问物品
+用户说："没有其他行李了" / "没有了" / "就这些"
+- intent.primary: "complete"
+- **extracted_fields: {{}}**（空，不提取！这不是物品也不是特殊注意事项）
+- phase_after_update: 5（进入其他信息阶段）
+- guide_to_field: "from_floor_elevator" 或下一个待收集字段
+
+上下文：阶段5，Agent 询问特殊注意事项
+用户说："没有了" / "没有其他了" / "就这些" / "没有"
+- intent.primary: "complete"
+- **extracted_fields: {{}}**（空，不提取！"没有了"不是特殊注意事项）
+- phase_after_update: 6（进入确认阶段）
+- guide_to_field: null
 
 ## 示例13：用户确认跳过特殊注意事项
 上下文：Agent 询问特殊注意事项，用户表示没有或要跳过
-用户说："确认跳过" / "跳过" / "没什么特别的" / "没有其他了" / "就这些" / "没有"
-intent.primary 应为 "complete"（表示 special_notes 收集完成）
-phase_after_update 应为 6（进入确认阶段）
+用户说："确认跳过" / "跳过" / "没什么特别的"
+- intent.primary: "complete"（表示 special_notes 收集完成）
+- **extracted_fields: {{}}**（空）
+- phase_after_update: 6（进入确认阶段）
+
+## 示例14：用户先提供特殊需求，然后说"没有了"
+上下文：阶段5，用户已提供"有宜家家具"，Agent 追问"还有其他特殊注意事项吗？"
+用户说："没有了" / "没其他了" / "就这些"
+- intent.primary: "complete"（表示 special_notes 收集完成）
+- **extracted_fields: {{}}**（空！"没有了"不是新的特殊需求！）
+- phase_after_update: 6（所有阶段5信息都已收集，进入确认阶段）
+- **guide_to_field: null**（不再引导任何字段，准备进入确认阶段）
+
+⚠️ **常见错误**：不要把"没有了"、"就这些"、"没有其他了"提取为 special_notes！
+这些是完成信号，不是实际的特殊需求。
 
 ## 重要提示
 - 绝对不要使用 "from_floor_elevator" 作为字段名，必须分开为 from_floor 和 from_has_elevator
