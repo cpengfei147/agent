@@ -209,13 +209,16 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
     if not is_done(from_status):
         return "from_address"
 
-    # 2.1 搬出地址确认后，追问建筑类型
+    # 2.1-2.2 建筑类型和户型：主要由 Router LLM 自主决定
+    # 这里作为后备逻辑，当 Router 未正确输出 guide_to_field 时使用
     building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
+    apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
+
+    # 后备：如果搬出地址已确认但建筑类型未收集
     if building_type is None:
         return "from_building_type"
 
-    # 2.2 公寓类建筑需要追问户型
-    apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
+    # 后备：如果是公寓类建筑但户型未收集
     if building_type in apartment_types:
         room_type = from_addr.get("room_type") if isinstance(from_addr, dict) else None
         if room_type is None:

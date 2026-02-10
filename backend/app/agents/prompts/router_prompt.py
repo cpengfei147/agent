@@ -316,6 +316,34 @@ phase_after_update 应为 6（进入确认阶段）
 - intent.primary: "confirm"
 - phase_after_update: 6
 
+示例8：搬出地址确认后追问建筑类型
+- 当前状态：from_address.status="baseline", from_address.building_type=null
+- 用户说："对的，就是这个地址"（确认地址）
+- intent.primary: "confirm"
+- phase_after_update: 2（还在地址阶段）
+- **guide_to_field: "from_building_type"**（追问建筑类型）
+
+示例9：用户回答建筑类型是公寓
+- 当前状态：from_address.status="baseline", from_address.building_type=null
+- 用户说："マンション" 或 "1"（选择了第一个选项）
+- 提取 from_building_type: "マンション"
+- phase_after_update: 2（公寓类需要追问户型）
+- **guide_to_field: "from_room_type"**（追问户型）
+
+示例10：用户回答建筑类型是戸建て
+- 当前状态：from_address.status="baseline", from_address.building_type=null
+- 用户说："戸建て" 或 "3"
+- 提取 from_building_type: "戸建て"
+- phase_after_update: 2（非公寓类不需要户型）
+- **guide_to_field: "to_address"**（跳过户型，进入搬入地址）
+
+示例11：用户回答户型
+- 当前状态：from_address.building_type="マンション", from_address.room_type=null
+- 用户说："3LDK"
+- 提取 from_room_type: "3LDK"
+- phase_after_update: 2（继续收集搬入地址）
+- **guide_to_field: "to_address"**
+
 # guide_to_field 决策规则（主动引导，但不强制顺序）
 
 ## 核心原则
@@ -333,16 +361,35 @@ phase_after_update 应为 6（进入确认阶段）
 从未完成的字段中选一个作为 guide_to_field：
 1. people_count
 2. from_address / to_address
-3. move_date
-4. items
-5. from_building_type、from_floor_elevator（公寓类建筑）
-6. to_floor_elevator
-7. packing_service
-8. special_notes
+3. **from_building_type**（搬出地址确认后立即追问）
+4. **from_room_type**（公寓类建筑确认后追问户型）
+5. move_date
+6. items
+7. from_floor_elevator（公寓类建筑的楼层电梯）
+8. to_floor_elevator
+9. packing_service
+10. special_notes
+
+## ⚠️ 地址确认后的追问逻辑（重要！）
+
+### 搬出地址确认后 → 追问建筑类型
+**触发条件**：`from_address.status = baseline` 且 `from_address.building_type = null`
+**guide_to_field** = "from_building_type"
+**说明**：用户确认了搬出地址后，必须立即询问建筑物类型（マンション/アパート/戸建て等）
+
+### 建筑类型确认后 → 追问户型（仅公寓类）
+**触发条件**：`from_address.building_type` 是公寓类（マンション/アパート/タワーマンション/団地/ビル）且 `from_address.room_type = null`
+**guide_to_field** = "from_room_type"
+**说明**：公寓类建筑需要知道户型（1R/1K/1DK/1LDK/2LDK/3LDK等）
+
+### 非公寓类建筑 → 跳过户型
+**触发条件**：`from_address.building_type` 是戸建て/その他/公共の建物
+**说明**：不需要询问户型，直接进入下一个字段（to_address 或 move_date）
 
 ## 特别注意
 - 如果所有字段都已完成 → guide_to_field = null，phase_after_update = 6
 - 用户一次说多个信息 → 都提取，guide_to_field = 还缺的信息
+- **地址确认后追问建筑类型和户型是必须的流程，不能跳过**
 
 # 红线规则（必须遵守）
 - R1: from_address 只有在有 postal_code 时才能标记为 baseline
