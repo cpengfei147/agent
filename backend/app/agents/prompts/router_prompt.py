@@ -367,6 +367,26 @@ phase_after_update 应为 6（进入确认阶段）
 - phase_after_update: 2（继续收集搬入地址）
 - **guide_to_field: "to_address"**
 
+示例12：搬入地址确认后，建筑类型已收集 → 跳到日期
+- 当前状态：
+  - from_address.status="baseline", from_address.building_type="公共の建物"（已收集）
+  - to_address.status="baseline"（刚确认）
+  - move_date.status="not_collected"
+- 用户消息：`[用户确认了搬入地址]`
+- intent.primary: "confirm"
+- phase_after_update: 3（进入日期阶段）
+- **guide_to_field: "move_date"**（建筑类型已收集，跳过，直接问日期）
+- ⚠️ **错误做法**：guide_to_field: "from_building_type"（建筑类型已经收集了！）
+
+示例13：搬入地址确认后，建筑类型未收集 → 追问建筑类型
+- 当前状态：
+  - from_address.status="baseline", from_address.building_type=null（未收集）
+  - to_address.status="baseline"（刚确认）
+- 用户消息：`[用户确认了搬入地址]`
+- intent.primary: "confirm"
+- phase_after_update: 2（还在地址阶段，需要收集建筑类型）
+- **guide_to_field: "from_building_type"**（建筑类型未收集，需要追问）
+
 # guide_to_field 决策规则（主动引导，但不强制顺序）
 
 ## 核心原则
@@ -424,11 +444,18 @@ phase_after_update 应为 6（进入确认阶段）
 # ⚠️ 严禁重复询问已收集的字段（最高优先级规则）
 - **R8: 已收集的字段（status=baseline/ideal）绝对不能再次询问，除非用户主动要求修改**
 - **检查方法**：在输出 guide_to_field 之前，必须检查该字段的 status：
-  - 如果 status = "baseline" 或 "ideal" → 该字段已完成，跳过
+  - 如果 status = "baseline" 或 "ideal" → 该字段已完成，**必须跳过，找下一个未完成的字段**
   - 如果 status = "in_progress" → 需要补充信息，可以继续追问
-  - 如果 status = "not_collected" → 未收集，应该询问
+  - 如果 status = "not_collected" 或 "asked" → 未收集，应该询问
+- **guide_to_field 检查清单**（每次输出前必须执行）：
+  1. 查看当前 fields_status 中各字段的 status
+  2. 找到第一个 status 为 "not_collected" 或 "asked" 的字段
+  3. 特别检查 from_address.building_type 是否为 null（不是看 status）
+  4. 特别检查 from_address.room_type 是否需要（公寓类建筑）
+  5. 输出找到的未完成字段作为 guide_to_field
 - **示例**：
   - from_address.status = "baseline" → 不能再问搬出地址
+  - from_address.building_type = "公共の建物" → 建筑类型**已收集**，不能再问
   - to_address.status = "baseline" → 不能再问搬入地址
   - move_date.status = "baseline" → 不能再问日期
   - items.status = "baseline" → 不能再问物品
