@@ -430,41 +430,105 @@ function App() {
     }
   }, [isConnected])
 
-  // 上传图片
+  // 文件选择引用
+  const fileInputRef = useRef(null)
+
+  // 上传图片 - 显示隐私协议
   const handleUploadImage = useCallback(() => {
     setShowPrivacyModal(true)
   }, [])
 
-  // 确认隐私协议并上传
-  const confirmPrivacyAndUpload = useCallback(async () => {
+  // 确认隐私协议后打开文件选择器
+  const confirmPrivacyAndUpload = useCallback(() => {
     setShowPrivacyModal(false)
-    // 不在对话中显示上传图片消息
+    // 触发文件选择
+    fileInputRef.current?.click()
+  }, [])
+
+  // 处理文件选择后的上传
+  const handleFileSelected = useCallback(async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    // 重置 input 以便可以再次选择同一文件
+    event.target.value = ''
+
+    // 验证文件类型
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+    if (!allowedTypes.includes(file.type)) {
+      message.error('只支持 JPG、PNG、WebP、GIF 格式的图片')
+      return
+    }
+
+    // 验证文件大小 (最大 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      message.error('图片大小不能超过 10MB')
+      return
+    }
+
     setIsRecognizing(true)
     setRecognitionStep(0)
 
-    // 模拟识别步骤
-    for (let step = 1; step <= 4; step++) {
-      await new Promise(r => setTimeout(r, 800))
-      setRecognitionStep(step)
+    try {
+      // 显示上传进度
+      setRecognitionStep(1)
+
+      // 创建 FormData 并上传
+      const formData = new FormData()
+      formData.append('file', file)
+      if (sessionTokenRef.current) {
+        formData.append('session_token', sessionTokenRef.current)
+      }
+
+      setRecognitionStep(2)
+
+      const response = await fetch('/api/items/upload', {
+        method: 'POST',
+        body: formData
+      })
+
+      setRecognitionStep(3)
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || '图片上传失败')
+      }
+
+      const result = await response.json()
+
+      setRecognitionStep(4)
+
+      if (!result.success) {
+        throw new Error(result.error || '图片识别失败')
+      }
+
+      // 转换识别结果格式
+      const items = result.items.map((item, index) => ({
+        id: index + 1,
+        name: item.name,
+        name_ja: item.name_ja,
+        category: item.category,
+        count: item.count || 1,
+        confidence: item.confidence,
+        note: item.note || ''
+      }))
+
+      // 发送识别结果到 WebSocket
+      wsRef.current?.send(JSON.stringify({
+        type: 'image_uploaded',
+        image_id: result.image_id,
+        items: items
+      }))
+
+      setPendingItems(items)
+      message.success(`识别到 ${items.length} 件物品`)
+
+    } catch (error) {
+      console.error('Image upload error:', error)
+      message.error(error.message || '图片处理失败，请重试')
+    } finally {
+      setIsRecognizing(false)
     }
-
-    // 模拟识别结果 (实际应调用后端)
-    const mockItems = [
-      { id: 1, name: '衣装ケース', name_ja: '衣装ケース', category: '衣類・寝具', count: 1, note: '备注内容' },
-      { id: 2, name: 'タンス類', name_ja: 'タンス類', category: '衣類・寝具', count: 1 },
-      { id: 3, name: '乾燥機', name_ja: '乾燥機', category: '家电', count: 1 },
-      { id: 4, name: 'エアコン', name_ja: 'エアコン', category: '家电', count: 2 },
-      { id: 5, name: 'L 标准纸箱', name_ja: 'ダンボール', category: 'ダンボール', count: 12 }
-    ]
-
-    wsRef.current?.send(JSON.stringify({
-      type: 'image_uploaded',
-      image_id: 'mock_image_' + Date.now(),
-      items: mockItems
-    }))
-
-    setPendingItems(mockItems)
-    setIsRecognizing(false)
   }, [])
 
   // 确认物品
@@ -1313,6 +1377,15 @@ function App() {
 
   return (
     <Layout className="app-layout">
+      {/* 隐藏的文件选择器 */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        style={{ display: 'none' }}
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        onChange={handleFileSelected}
+      />
+
       {/* Header */}
       <Header className="app-header">
         <div className="header-left">
