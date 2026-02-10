@@ -8,7 +8,9 @@ import {
   UnorderedListOutlined, CheckCircleOutlined,
   LoadingOutlined, DeleteOutlined, HomeOutlined,
   EnvironmentOutlined, PhoneOutlined, MailOutlined,
-  UserOutlined, CalendarOutlined, InboxOutlined
+  UserOutlined, CalendarOutlined, InboxOutlined,
+  ClockCircleOutlined, MinusCircleOutlined, CloseCircleOutlined,
+  CarryOutOutlined, ShoppingOutlined
 } from '@ant-design/icons'
 import './App.css'
 
@@ -73,6 +75,9 @@ function App() {
 
   // 上次的快捷选项（用于避免重复显示）
   const lastOptionsRef = useRef([])
+
+  // 已添加的地址卡片（防止重复）
+  const addedAddressCardsRef = useRef({ from: false, to: false })
 
   // 多选状态（阶段5特殊注意事项）
   const [selectedOptions, setSelectedOptions] = useState([])
@@ -232,13 +237,13 @@ function App() {
             const addrField = data.fields_status?.[`${addressType}_address`] || {}
             const isAlreadyConfirmed = addrField.status === 'baseline' && !addrField.needs_confirmation
 
-            // 检查是否已经有相同的地址卡片在消息流中
-            const existingCard = messages.find(m =>
-              (m.type === 'address_confirm_card' || m.type === 'address_selection_card') &&
-              m.addressType === addressType
-            )
+            // 使用 ref 检查是否已添加过卡片（避免闭包问题导致重复）
+            const alreadyAdded = addedAddressCardsRef.current[addressType]
 
-            if (!existingCard && !isAlreadyConfirmed && !isVerifyingAddress) {
+            if (!alreadyAdded && !isAlreadyConfirmed && !isVerifyingAddress) {
+              // 标记为正在添加
+              addedAddressCardsRef.current[addressType] = true
+
               // 开始显示验证动画
               setIsVerifyingAddress(true)
               setAddressVerifyStep(0)
@@ -270,7 +275,7 @@ function App() {
                   }, 500)
                 }
               }, 600)
-            } else if (existingCard && isAlreadyConfirmed) {
+            } else if (alreadyAdded && isAlreadyConfirmed) {
               // 地址已确认，更新卡片状态
               setMessages(prev => prev.map(msg => {
                 if ((msg.type === 'address_confirm_card' || msg.type === 'address_selection_card') &&
@@ -354,6 +359,7 @@ function App() {
     setItemsJustConfirmed(false)
     textQueueRef.current = []
     isTypingRef.current = false
+    addedAddressCardsRef.current = { from: false, to: false }
   }
 
   // 发送消息
@@ -1037,6 +1043,9 @@ function App() {
 
   // 处理地址确认
   const handleAddressConfirmed = useCallback((addressType, confirmed) => {
+    // 立即显示加载状态
+    setIsLoading(true)
+
     wsRef.current?.send(JSON.stringify({
       type: 'address_confirmed',
       address_type: addressType,
@@ -1467,7 +1476,8 @@ function App() {
           </div>
         )}
 
-        {isLoading && messages[messages.length - 1]?.role !== 'assistant' && (
+        {/* 显示加载状态：当 isLoading 为 true 且最后一条消息不在流式输出中 */}
+        {isLoading && !messages[messages.length - 1]?.streaming && (
           <div className="message-wrapper assistant">
             <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
             <Spin indicator={<LoadingOutlined />} />
@@ -1524,129 +1534,343 @@ function App() {
         <p>识别完成后会自动删除。</p>
       </Modal>
 
-      {/* Item List Modal */}
+      {/* Item List Modal - 搬家清单 */}
       <Modal
         title="搬家清单"
         open={showItemListModal}
         onCancel={() => setShowItemListModal(false)}
         footer={null}
-        width={400}
+        width={420}
       >
         <div className="checklist-modal">
-          {/* 已收集的信息 */}
-          <div className="checklist-section">
-            <h4>已收集信息</h4>
-            <List
-              size="small"
-              dataSource={[
-                { label: '搬家人数', value: fieldsStatus.people_count?.value || fieldsStatus.people_count, icon: <UserOutlined /> },
-                {
-                  label: '搬出地址',
-                  value: (() => {
-                    const addr = fieldsStatus.from_address
-                    if (!addr) return null
-                    let display = addr.value || ''
-                    if (addr.postal_code) display = `〒${addr.postal_code} ${display}`.trim()
-                    if (addr.building_type) display += ` (${addr.building_type})`
-                    return display || null
-                  })(),
-                  icon: <EnvironmentOutlined />
+          {/* 所有字段状态列表 */}
+          {(() => {
+            // 定义所有需要收集的字段
+            const allFields = [
+              // 阶段1: 人数
+              {
+                key: 'people_count',
+                label: '搬家人数',
+                phase: 1,
+                icon: <UserOutlined />,
+                getStatus: () => fieldsStatus.people_count_status || 'not_collected',
+                getValue: () => {
+                  const v = fieldsStatus.people_count
+                  return v ? `${v}人` : null
+                }
+              },
+              // 阶段2: 地址
+              {
+                key: 'from_address',
+                label: '搬出地址',
+                phase: 2,
+                icon: <EnvironmentOutlined />,
+                getStatus: () => fieldsStatus.from_address?.status || 'not_collected',
+                getValue: () => {
+                  const addr = fieldsStatus.from_address
+                  if (!addr?.value) return null
+                  let display = addr.value
+                  if (addr.postal_code) display = `〒${addr.postal_code} ${display}`
+                  return display
+                }
+              },
+              {
+                key: 'from_building_type',
+                label: '搬出建筑类型',
+                phase: 2,
+                icon: <HomeOutlined />,
+                getStatus: () => fieldsStatus.from_address?.building_type ? 'baseline' : 'not_collected',
+                getValue: () => fieldsStatus.from_address?.building_type || null
+              },
+              {
+                key: 'from_room_type',
+                label: '搬出户型',
+                phase: 2,
+                icon: <HomeOutlined />,
+                getStatus: () => fieldsStatus.from_address?.room_type ? 'baseline' : 'not_collected',
+                getValue: () => fieldsStatus.from_address?.room_type || null,
+                // 只有公寓类建筑才需要户型
+                isVisible: () => {
+                  const bt = fieldsStatus.from_address?.building_type
+                  return bt && ['マンション', 'アパート', 'タワーマンション', '団地', 'ビル'].includes(bt)
+                }
+              },
+              {
+                key: 'to_address',
+                label: '搬入地址',
+                phase: 2,
+                icon: <EnvironmentOutlined />,
+                getStatus: () => fieldsStatus.to_address?.status || 'not_collected',
+                getValue: () => {
+                  const addr = fieldsStatus.to_address
+                  if (!addr?.value && !addr?.city) return null
+                  return addr.value || addr.city || null
+                }
+              },
+              // 阶段3: 日期
+              {
+                key: 'move_date',
+                label: '搬家日期',
+                phase: 3,
+                icon: <CalendarOutlined />,
+                getStatus: () => fieldsStatus.move_date?.status || 'not_collected',
+                getValue: () => {
+                  const date = fieldsStatus.move_date
+                  if (!date?.value && !date?.month) return null
+                  let display = date.value || ''
+                  if (!display && date.month) {
+                    display = `${date.year || new Date().getFullYear()}年${date.month}月`
+                    if (date.day) display += `${date.day}日`
+                    else if (date.period) display += `${date.period}`
+                  }
+                  if (date.time_slot) display += ` ${date.time_slot}`
+                  return display || null
+                }
+              },
+              // 阶段4: 物品
+              {
+                key: 'items',
+                label: '物品清单',
+                phase: 4,
+                icon: <ShoppingOutlined />,
+                getStatus: () => {
+                  const items = fieldsStatus.items
+                  if (!items) return 'not_collected'
+                  if (items.status === 'baseline' || items.status === 'ideal') return 'baseline'
+                  if (items.status === 'in_progress') return 'in_progress'
+                  if (items.status === 'asked') return 'asked'
+                  if (items.list?.length > 0) return 'in_progress'
+                  return 'not_collected'
                 },
-                {
-                  label: '搬入地址',
-                  value: (() => {
-                    const addr = fieldsStatus.to_address
-                    if (!addr) return null
-                    let display = addr.value || ''
-                    if (addr.building_type) display += ` (${addr.building_type})`
-                    return display || null
-                  })(),
-                  icon: <EnvironmentOutlined />
+                getValue: () => {
+                  const items = fieldsStatus.items?.list || confirmedItems
+                  if (!items || items.length === 0) return null
+                  const count = items.reduce((sum, item) => sum + (item.count || 1), 0)
+                  return `${items.length}种 共${count}件`
+                }
+              },
+              // 阶段5: 其他信息
+              {
+                key: 'from_floor_elevator',
+                label: '搬出楼层电梯',
+                phase: 5,
+                icon: <HomeOutlined />,
+                getStatus: () => fieldsStatus.from_floor_elevator?.status || 'not_collected',
+                getValue: () => {
+                  const floor = fieldsStatus.from_floor_elevator
+                  if (!floor) return null
+                  let parts = []
+                  if (floor.floor) parts.push(`${floor.floor}楼`)
+                  if (floor.has_elevator === true) parts.push('有电梯')
+                  else if (floor.has_elevator === false) parts.push('无电梯')
+                  return parts.length > 0 ? parts.join(' ') : null
                 },
-                {
-                  label: '搬家日期',
-                  value: (() => {
-                    const date = fieldsStatus.move_date
-                    if (!date) return null
-                    let display = date.value || ''
-                    if (date.time_slot) display += ` ${date.time_slot}`
-                    return display || null
-                  })(),
-                  icon: <CalendarOutlined />
+                // 只有公寓类建筑才需要
+                isVisible: () => {
+                  const bt = fieldsStatus.from_address?.building_type
+                  return bt && ['マンション', 'アパート', 'タワーマンション', '団地', 'ビル'].includes(bt)
+                }
+              },
+              {
+                key: 'to_floor_elevator',
+                label: '搬入楼层电梯',
+                phase: 5,
+                icon: <HomeOutlined />,
+                getStatus: () => fieldsStatus.to_floor_elevator?.status || 'not_collected',
+                getValue: () => {
+                  const floor = fieldsStatus.to_floor_elevator
+                  if (!floor) return null
+                  let parts = []
+                  if (floor.floor) parts.push(`${floor.floor}楼`)
+                  if (floor.has_elevator === true) parts.push('有电梯')
+                  else if (floor.has_elevator === false) parts.push('无电梯')
+                  else if (floor.has_elevator === '还不清楚') parts.push('待定')
+                  return parts.length > 0 ? parts.join(' ') : null
+                }
+              },
+              {
+                key: 'packing_service',
+                label: '打包服务',
+                phase: 5,
+                icon: <InboxOutlined />,
+                getStatus: () => fieldsStatus.packing_service_status || (fieldsStatus.packing_service ? 'baseline' : 'not_collected'),
+                getValue: () => fieldsStatus.packing_service || null
+              },
+              {
+                key: 'special_notes',
+                label: '特殊注意事项',
+                phase: 5,
+                icon: <CarryOutOutlined />,
+                getStatus: () => {
+                  if (fieldsStatus.special_notes_done) return 'baseline'
+                  if (fieldsStatus.special_notes?.length > 0) return 'in_progress'
+                  if (fieldsStatus.special_notes_status === 'asked') return 'asked'
+                  return fieldsStatus.special_notes_status || 'not_collected'
                 },
-                {
-                  label: '搬出楼层',
-                  value: (() => {
-                    const floor = fieldsStatus.from_floor_elevator
-                    if (!floor || !floor.floor) return null
-                    let display = `${floor.floor}楼`
-                    if (floor.has_elevator === true) display += '（有电梯）'
-                    else if (floor.has_elevator === false) display += '（无电梯）'
-                    else if (floor.has_elevator) display += `（${floor.has_elevator}）`
-                    return display
-                  })(),
-                  icon: <HomeOutlined />
-                },
-                {
-                  label: '搬入楼层',
-                  value: (() => {
-                    const floor = fieldsStatus.to_floor_elevator
-                    if (!floor || !floor.floor) return null
-                    let display = `${floor.floor}楼`
-                    if (floor.has_elevator === true) display += '（有电梯）'
-                    else if (floor.has_elevator === false) display += '（无电梯）'
-                    else if (floor.has_elevator) display += `（${floor.has_elevator}）`
-                    return display
-                  })(),
-                  icon: <HomeOutlined />
-                },
-                { label: '打包服务', value: fieldsStatus.packing_service, icon: <InboxOutlined /> },
-                {
-                  label: '特殊注意',
-                  value: fieldsStatus.special_notes?.length > 0 ? fieldsStatus.special_notes.join('、') : null,
-                  icon: <InboxOutlined />
-                },
-              ].filter(item => item.value)}
-              renderItem={item => (
-                <List.Item>
-                  <List.Item.Meta
-                    avatar={item.icon}
-                    title={item.label}
-                    description={typeof item.value === 'object' ? JSON.stringify(item.value) : item.value}
-                  />
-                </List.Item>
-              )}
-              locale={{ emptyText: '暂无收集信息' }}
-            />
-          </div>
+                getValue: () => {
+                  if (fieldsStatus.special_notes_done && (!fieldsStatus.special_notes || fieldsStatus.special_notes.length === 0)) {
+                    return '无'
+                  }
+                  return fieldsStatus.special_notes?.length > 0 ? fieldsStatus.special_notes.join('、') : null
+                }
+              },
+            ]
 
-          {/* 物品清单 */}
-          <div className="checklist-section" style={{ marginTop: 16 }}>
-            <h4>物品清单</h4>
-            {confirmedItems.length === 0 && (!fieldsStatus.items?.list || fieldsStatus.items.list.length === 0) ? (
-              <p style={{ textAlign: 'center', color: '#999', padding: '16px 0' }}>暂无物品</p>
-            ) : (
-              <List
-                size="small"
-                dataSource={confirmedItems.length > 0 ? confirmedItems : (fieldsStatus.items?.list || [])}
-                renderItem={item => (
-                  <List.Item>
-                    <span>{item.name_ja || item.name}</span>
-                    <Tag color="blue">×{item.count || 1}</Tag>
-                  </List.Item>
+            // 状态图标和颜色映射
+            const getStatusDisplay = (status, value) => {
+              switch (status) {
+                case 'baseline':
+                case 'ideal':
+                  return { icon: <CheckCircleOutlined />, color: '#52c41a', text: '已收集' }
+                case 'asked':
+                  return { icon: <ClockCircleOutlined />, color: '#faad14', text: '待回答' }
+                case 'in_progress':
+                  return { icon: <LoadingOutlined />, color: '#1890ff', text: '收集中' }
+                case 'skipped':
+                  return { icon: <CloseCircleOutlined />, color: '#ff4d4f', text: '已跳过' }
+                default:
+                  return { icon: <MinusCircleOutlined />, color: '#d9d9d9', text: '未收集' }
+              }
+            }
+
+            // 按阶段分组
+            const phaseGroups = {
+              1: { title: '阶段1: 人数', fields: [] },
+              2: { title: '阶段2: 地址', fields: [] },
+              3: { title: '阶段3: 日期', fields: [] },
+              4: { title: '阶段4: 物品', fields: [] },
+              5: { title: '阶段5: 其他信息', fields: [] },
+            }
+
+            allFields.forEach(field => {
+              // 检查字段是否应该显示
+              if (field.isVisible && !field.isVisible()) return
+              phaseGroups[field.phase].fields.push(field)
+            })
+
+            return (
+              <>
+                {Object.entries(phaseGroups).map(([phase, group]) => (
+                  group.fields.length > 0 && (
+                    <div key={phase} className="checklist-phase-group" style={{ marginBottom: 16 }}>
+                      <div style={{
+                        fontSize: 12,
+                        color: '#666',
+                        marginBottom: 8,
+                        paddingBottom: 4,
+                        borderBottom: '1px solid #f0f0f0'
+                      }}>
+                        {group.title}
+                      </div>
+                      {group.fields.map(field => {
+                        const status = field.getStatus()
+                        const value = field.getValue()
+                        const statusDisplay = getStatusDisplay(status, value)
+
+                        return (
+                          <div
+                            key={field.key}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              padding: '8px 0',
+                              borderBottom: '1px solid #fafafa'
+                            }}
+                          >
+                            {/* 状态图标 */}
+                            <span style={{
+                              color: statusDisplay.color,
+                              fontSize: 16,
+                              marginRight: 8,
+                              width: 20,
+                              textAlign: 'center'
+                            }}>
+                              {statusDisplay.icon}
+                            </span>
+
+                            {/* 字段图标 */}
+                            <span style={{ color: '#666', marginRight: 8 }}>
+                              {field.icon}
+                            </span>
+
+                            {/* 字段名称 */}
+                            <span style={{
+                              flex: 1,
+                              color: status === 'not_collected' ? '#999' : '#333'
+                            }}>
+                              {field.label}
+                            </span>
+
+                            {/* 字段值 */}
+                            <span style={{
+                              color: value ? '#333' : '#ccc',
+                              fontSize: 12,
+                              maxWidth: 150,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              textAlign: 'right'
+                            }}>
+                              {value || statusDisplay.text}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                ))}
+
+                {/* 物品明细（如果有物品） */}
+                {(confirmedItems.length > 0 || fieldsStatus.items?.list?.length > 0) && (
+                  <div className="checklist-section" style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>物品明细</div>
+                    <div style={{
+                      maxHeight: 150,
+                      overflowY: 'auto',
+                      background: '#fafafa',
+                      borderRadius: 4,
+                      padding: 8
+                    }}>
+                      {(confirmedItems.length > 0 ? confirmedItems : fieldsStatus.items?.list || []).map((item, idx) => (
+                        <div key={idx} style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          padding: '4px 0',
+                          fontSize: 12
+                        }}>
+                          <span>{item.name_ja || item.name}</span>
+                          <Tag color="blue" size="small">×{item.count || 1}</Tag>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
-              />
-            )}
-          </div>
 
-          {/* 完成进度 */}
-          <div style={{ marginTop: 16, padding: '12px', background: '#f5f5f5', borderRadius: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span>收集进度</span>
-              <span>{Math.round((completion.completion_rate || 0) * 100)}%</span>
-            </div>
-            <Progress percent={Math.round((completion.completion_rate || 0) * 100)} strokeColor="#6366f1" />
-          </div>
+                {/* 完成进度 */}
+                <div style={{ marginTop: 16, padding: '12px', background: '#f5f5f5', borderRadius: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span>收集进度</span>
+                    <span>{Math.round((completion.completion_rate || 0) * 100)}%</span>
+                  </div>
+                  <Progress percent={Math.round((completion.completion_rate || 0) * 100)} strokeColor="#6366f1" />
+                </div>
+
+                {/* 状态图例 */}
+                <div style={{
+                  marginTop: 12,
+                  display: 'flex',
+                  justifyContent: 'center',
+                  gap: 16,
+                  fontSize: 11,
+                  color: '#999'
+                }}>
+                  <span><CheckCircleOutlined style={{ color: '#52c41a' }} /> 已收集</span>
+                  <span><ClockCircleOutlined style={{ color: '#faad14' }} /> 待回答</span>
+                  <span><MinusCircleOutlined style={{ color: '#d9d9d9' }} /> 未收集</span>
+                </div>
+              </>
+            )
+          })()}
         </div>
       </Modal>
 

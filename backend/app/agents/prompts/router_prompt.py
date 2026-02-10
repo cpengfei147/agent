@@ -316,6 +316,29 @@ phase_after_update 应为 6（进入确认阶段）
 - intent.primary: "confirm"
 - phase_after_update: 6
 
+示例7.1：用户不确定日期，跳过进入物品阶段
+- 当前状态：phase=3（正在问日期），move_date.status="not_collected"
+- 用户说："没想好呢" / "还没定" / "不清楚" / "不确定" / "还在考虑"
+- intent.primary: "skip"（用户想跳过当前问题）
+- phase_after_update: 4（进入物品阶段）
+- **guide_to_field: "items"**（跳过日期，引导到物品收集）
+- 说明：用户暂时无法提供日期信息，应该先跳过，继续收集其他信息
+
+示例7.2：用户不确定搬入地址，跳过进入日期阶段
+- 当前状态：phase=2（正在问地址），to_address.status="not_collected"
+- 用户说："还没找好房子" / "不知道搬去哪" / "还在看房"
+- intent.primary: "skip"
+- phase_after_update: 3（进入日期阶段）
+- **guide_to_field: "move_date"**
+- 说明：用户暂时不知道搬入地址，跳过继续
+
+示例7.3：用户不确定物品，跳过进入其他信息阶段
+- 当前状态：phase=4（正在问物品），items.status="not_collected"
+- 用户说："还没整理" / "不知道有多少"
+- intent.primary: "skip"
+- phase_after_update: 5（进入其他信息阶段）
+- **guide_to_field: "from_floor_elevator"** 或下一个待收集字段
+
 示例8：搬出地址确认后追问建筑类型
 - 当前状态：from_address.status="baseline", from_address.building_type=null
 - 用户说："对的，就是这个地址"（确认地址）

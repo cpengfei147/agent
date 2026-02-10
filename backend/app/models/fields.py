@@ -6,6 +6,7 @@ from pydantic import BaseModel
 class FieldStatus(str, Enum):
     """Field collection status"""
     NOT_COLLECTED = "not_collected"
+    ASKED = "asked"           # 已询问但用户未回答
     IN_PROGRESS = "in_progress"
     BASELINE = "baseline"
     IDEAL = "ideal"
@@ -90,6 +91,7 @@ class CollectedFields(BaseModel):
     packing_service: Optional[str] = None
     packing_service_status: FieldStatus = FieldStatus.NOT_COLLECTED
     special_notes: List[str] = []
+    special_notes_status: FieldStatus = FieldStatus.NOT_COLLECTED  # 追踪是否已询问
     special_notes_done: bool = False  # 用户点"没有了"才设为True
 
     # 跳过字段复查标记

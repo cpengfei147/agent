@@ -116,9 +116,10 @@ def get_ui_component_for_phase(phase: Phase, fields_status: dict) -> dict:
     if phase == Phase.ITEMS:
         items = fields_status.get("items", {})
         items_status = items.get("status", "not_collected") if isinstance(items, dict) else "not_collected"
+        logger.info(f"[UI_COMPONENT] Phase=ITEMS, items={items}, items_status={items_status}")
 
         # If items not yet collected, show item evaluation UI
-        if items_status in ["not_collected", "in_progress"]:
+        if items_status in ["not_collected", "in_progress", "asked"]:
             return {
                 "type": "item_evaluation",
                 "data": {
@@ -127,6 +128,8 @@ def get_ui_component_for_phase(phase: Phase, fields_status: dict) -> dict:
                     "can_select_from_catalog": True
                 }
             }
+        else:
+            logger.info(f"[UI_COMPONENT] Items status '{items_status}' not in expected list, returning none")
 
     # Phase 6 (CONFIRMATION) - Show confirmation or login card
     # 只有当用户明确确认后才显示报价卡片

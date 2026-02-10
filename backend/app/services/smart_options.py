@@ -64,21 +64,9 @@ async def get_smart_quick_options(
     recent_messages = recent_messages or []
 
     # === 固定选项场景 ===
+    # 优先级：next_field > 阶段判断 > LLM智能判断
 
-    # 开场白阶段：所有字段都未收集时，显示开场白选项
-    from app.core.phase_inference import get_completion_info, infer_phase
-    from app.models.fields import Phase
-
-    current_phase = infer_phase(fields_status)
-    if current_phase == Phase.OPENING:
-        return ["获取搬家报价", "咨询搬家问题", "了解服务内容"]
-
-    # 阶段6确认阶段：如果用户还未确认，显示确认相关选项
-    completion_info = get_completion_info(fields_status)
-    if completion_info["can_submit"] and not fields_status.get("user_confirmed_submit"):
-        # 用户可以提交但还未确认，显示确认选项
-        return ["确认无误，发送报价", "需要修改"]
-
+    # 1. 首先根据 next_field 判断（最准确，代表当前正在询问的字段）
     # 人数：固定选项
     if next_field == "people_count":
         return ["单身", "2~3人", "4人以上"]
@@ -119,7 +107,21 @@ async def get_smart_quick_options(
         # 没有物品时不显示快捷选项，让用户使用上传图片或从目录选择
         return []
 
-    # === 其他所有场景由LLM智能判断 ===
+    # 2. 然后根据阶段判断（当 next_field 没有匹配时）
+    from app.core.phase_inference import get_completion_info, infer_phase
+    from app.models.fields import Phase
+
+    # 开场白阶段：所有字段都未收集且没有指定 next_field
+    current_phase = infer_phase(fields_status)
+    if current_phase == Phase.OPENING and not next_field:
+        return ["获取搬家报价", "咨询搬家问题", "了解服务内容"]
+
+    # 阶段6确认阶段：如果用户还未确认，显示确认相关选项
+    completion_info = get_completion_info(fields_status)
+    if completion_info["can_submit"] and not fields_status.get("user_confirmed_submit"):
+        return ["确认无误，发送报价", "需要修改"]
+
+    # === 3. 其他所有场景由LLM智能判断 ===
 
     # Build recent context
     recent_context = ""

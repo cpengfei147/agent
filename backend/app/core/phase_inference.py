@@ -61,6 +61,10 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
     def is_skipped_or_done(status: str) -> bool:
         return status in [FieldStatus.BASELINE.value, FieldStatus.IDEAL.value, FieldStatus.SKIPPED.value]
 
+    def is_asked_or_done(status: str) -> bool:
+        """非必填字段：只要问过就不阻塞（ASKED/SKIPPED/BASELINE/IDEAL）"""
+        return status in [FieldStatus.ASKED.value, FieldStatus.BASELINE.value, FieldStatus.IDEAL.value, FieldStatus.SKIPPED.value]
+
     def is_in_progress_or_done(status: str) -> bool:
         return status in [FieldStatus.BASELINE.value, FieldStatus.IDEAL.value, FieldStatus.IN_PROGRESS.value]
 
@@ -87,44 +91,46 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
     if all_not_collected:
         return Phase.OPENING
 
-    # Check people_count
-    if not is_done(people_status):
+    # Check people_count - 人数可以跳过（用户明确说跳过才跳过）
+    if not is_skipped_or_done(people_status):
         return Phase.PEOPLE_COUNT
 
-    # Check addresses
+    # Check addresses - 地址可以跳过（用户明确说跳过才跳过）
     from_addr = fields_status.get("from_address", {})
     to_addr = fields_status.get("to_address", {})
 
     from_status = from_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(from_addr, dict) else FieldStatus.NOT_COLLECTED.value
     to_status = to_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(to_addr, dict) else FieldStatus.NOT_COLLECTED.value
 
-    if not is_done(from_status) or not is_done(to_status):
+    if not is_skipped_or_done(from_status) or not is_skipped_or_done(to_status):
         return Phase.ADDRESS
 
     # 搬出地址确认后，追问建筑类型和户型（仍在阶段2）
-    building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
-    if building_type is None:
-        return Phase.ADDRESS  # 建筑类型未收集，停留在阶段2
+    # 如果地址被跳过了，就不再追问建筑类型和户型
+    if from_status not in [FieldStatus.SKIPPED.value, FieldStatus.ASKED.value]:
+        building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
+        if building_type is None:
+            return Phase.ADDRESS  # 建筑类型未收集，停留在阶段2
 
-    # 公寓类建筑需要户型信息
-    apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
-    if building_type in apartment_types:
-        room_type = from_addr.get("room_type") if isinstance(from_addr, dict) else None
-        if room_type is None:
-            return Phase.ADDRESS  # 户型未收集，停留在阶段2
+        # 公寓类建筑需要户型信息
+        apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
+        if building_type in apartment_types:
+            room_type = from_addr.get("room_type") if isinstance(from_addr, dict) else None
+            if room_type is None:
+                return Phase.ADDRESS  # 户型未收集，停留在阶段2
 
-    # Check date
+    # Check date - 日期可以跳过（用户明确说跳过才跳过）
     move_date = fields_status.get("move_date", {})
     date_status = move_date.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(move_date, dict) else FieldStatus.NOT_COLLECTED.value
 
-    if not is_done(date_status):
+    if not is_skipped_or_done(date_status):
         return Phase.DATE
 
-    # Check items (requires people, addresses, date to be done first)
+    # Check items - 物品可以跳过（用户明确说跳过才跳过）
     items = fields_status.get("items", {})
     items_status = items.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(items, dict) else FieldStatus.NOT_COLLECTED.value
 
-    if not is_done(items_status):
+    if not is_skipped_or_done(items_status):
         return Phase.ITEMS
 
     # Check other info - 阶段5的字段按顺序检查
@@ -142,35 +148,30 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
         if not is_skipped_or_done(floor_status):
             return Phase.OTHER_INFO
 
-    # 3. 检查搬入楼层电梯（非必填，但要询问，独立于搬出地址的建筑类型）
-    # 因为搬入地址可能是不同类型的建筑
+    # 3. 检查搬入楼层电梯（非必填，问过即可继续）
     to_floor = fields_status.get("to_floor_elevator", {})
     to_floor_status = to_floor.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(to_floor, dict) else FieldStatus.NOT_COLLECTED.value
-    if not is_skipped_or_done(to_floor_status):
+    if not is_asked_or_done(to_floor_status):
         return Phase.OTHER_INFO
 
-    # 4. 检查打包服务（必须询问，可跳过）
+    # 4. 检查打包服务（非必填，问过即可继续）
     packing_status = fields_status.get("packing_service_status", FieldStatus.NOT_COLLECTED.value)
-    packing_value = fields_status.get("packing_service")
-    if packing_value is None and packing_status != FieldStatus.SKIPPED.value:
+    if not is_asked_or_done(packing_status):
         return Phase.OTHER_INFO
 
-    # 5. 检查特殊注意事项
-    # 完成条件：用户说了"没有了" 或者 已经有内容（用户选了一些选项）
-    # 注意：之前的bug是"没有了"被当作内容收集，现在已在collector中过滤掉
+    # 5. 检查特殊注意事项（非必填，问过即可继续）
+    # 完成条件：已问过(ASKED) 或 用户说了"没有了" 或 已有内容
+    special_notes_status = fields_status.get("special_notes_status", FieldStatus.NOT_COLLECTED.value)
     special_notes_done = fields_status.get("special_notes_done", False)
     special_notes_list = fields_status.get("special_notes", [])
     has_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
 
-    if not special_notes_done and not has_content:
+    if not is_asked_or_done(special_notes_status) and not special_notes_done and not has_content:
         return Phase.OTHER_INFO
 
-    # 6. 进入阶段6前，检查是否有SKIPPED字段需要复查
-    skipped_fields_reviewed = fields_status.get("skipped_fields_reviewed", False)
-    if not skipped_fields_reviewed:
-        skipped_fields = get_skipped_fields(fields_status)
-        if skipped_fields:
-            return Phase.OTHER_INFO  # 还有SKIPPED字段需要复查
+    # 6. 进入阶段6前，复查ASKED状态的字段（给用户二次机会）
+    # 注意：ASKED字段不阻塞，但会在确认阶段提示用户
+    # 移除强制复查逻辑，让流程更顺畅
 
     # All done
     return Phase.CONFIRMATION
@@ -198,48 +199,54 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
     def is_skipped_or_done(status: str) -> bool:
         return status in [FieldStatus.BASELINE.value, FieldStatus.IDEAL.value, FieldStatus.SKIPPED.value]
 
-    # 1. Check people_count
+    def is_asked_or_done(status: str) -> bool:
+        """非必填字段：只要问过就不再返回（ASKED/SKIPPED/BASELINE/IDEAL）"""
+        return status in [FieldStatus.ASKED.value, FieldStatus.BASELINE.value, FieldStatus.IDEAL.value, FieldStatus.SKIPPED.value]
+
+    # 1. Check people_count - 人数可以跳过（用户明确说跳过才跳过）
     people_status = fields_status.get("people_count_status", FieldStatus.NOT_COLLECTED.value)
-    if not is_done(people_status):
+    if not is_skipped_or_done(people_status):
         return "people_count"
 
-    # 2. Check from_address
+    # 2. Check from_address - 地址可以跳过（用户明确说跳过才跳过）
     from_addr = fields_status.get("from_address", {})
     from_status = from_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(from_addr, dict) else FieldStatus.NOT_COLLECTED.value
-    if not is_done(from_status):
+    if not is_skipped_or_done(from_status):
         return "from_address"
 
     # 2.1-2.2 建筑类型和户型：主要由 Router LLM 自主决定
     # 这里作为后备逻辑，当 Router 未正确输出 guide_to_field 时使用
-    building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
-    apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
+    # 如果地址被跳过了，就不再追问建筑类型和户型
+    if from_status not in [FieldStatus.SKIPPED.value, FieldStatus.ASKED.value]:
+        building_type = from_addr.get("building_type") if isinstance(from_addr, dict) else None
+        apartment_types = ["マンション", "アパート", "タワーマンション", "団地", "ビル"]
 
-    # 后备：如果搬出地址已确认但建筑类型未收集
-    if building_type is None:
-        return "from_building_type"
+        # 后备：如果搬出地址已确认但建筑类型未收集
+        if building_type is None:
+            return "from_building_type"
 
-    # 后备：如果是公寓类建筑但户型未收集
-    if building_type in apartment_types:
-        room_type = from_addr.get("room_type") if isinstance(from_addr, dict) else None
-        if room_type is None:
-            return "from_room_type"
+        # 后备：如果是公寓类建筑但户型未收集
+        if building_type in apartment_types:
+            room_type = from_addr.get("room_type") if isinstance(from_addr, dict) else None
+            if room_type is None:
+                return "from_room_type"
 
-    # 3. Check to_address
+    # 3. Check to_address - 地址可以跳过（用户明确说跳过才跳过）
     to_addr = fields_status.get("to_address", {})
     to_status = to_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(to_addr, dict) else FieldStatus.NOT_COLLECTED.value
-    if not is_done(to_status):
+    if not is_skipped_or_done(to_status):
         return "to_address"
 
-    # 4. Check move_date
+    # 4. Check move_date - 日期可以跳过（用户明确说跳过才跳过）
     move_date = fields_status.get("move_date", {})
     date_status = move_date.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(move_date, dict) else FieldStatus.NOT_COLLECTED.value
-    if not is_done(date_status):
+    if not is_skipped_or_done(date_status):
         return "move_date"
 
-    # 5. Check items
+    # 5. Check items - 物品可以跳过（用户明确说跳过才跳过）
     items = fields_status.get("items", {})
     items_status = items.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(items, dict) else FieldStatus.NOT_COLLECTED.value
-    if not is_done(items_status):
+    if not is_skipped_or_done(items_status):
         return "items"
 
     # 6. 楼层电梯检查（建筑类型和户型已在阶段2收集）
@@ -255,33 +262,28 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
         if not is_skipped_or_done(floor_status):
             return "from_floor_elevator"
 
-    # 8. Check to_floor_elevator (非必填，但要询问，用户可跳过)
-    # 注意：搬入地址的楼层电梯独立于搬出地址的建筑类型，因为搬入地址可能是不同建筑
+    # 8. Check to_floor_elevator（非必填，问过即可跳过）
     to_floor = fields_status.get("to_floor_elevator", {})
     to_floor_status = to_floor.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(to_floor, dict) else FieldStatus.NOT_COLLECTED.value
-    if not is_skipped_or_done(to_floor_status):
+    if not is_asked_or_done(to_floor_status):
         return "to_floor_elevator"
 
-    # 9. Check packing_service (必须询问，可跳过)
+    # 9. Check packing_service（非必填，问过即可跳过）
     packing_status = fields_status.get("packing_service_status", FieldStatus.NOT_COLLECTED.value)
-    packing_value = fields_status.get("packing_service")
-    if packing_value is None and packing_status != FieldStatus.SKIPPED.value:
+    if not is_asked_or_done(packing_status):
         return "packing_service"
 
-    # 10. Check special_notes - 有内容或用户说"没有了"都算完成
+    # 10. Check special_notes（非必填，问过即可跳过）
+    special_notes_status = fields_status.get("special_notes_status", FieldStatus.NOT_COLLECTED.value)
     special_notes_done = fields_status.get("special_notes_done", False)
     special_notes_list = fields_status.get("special_notes", [])
     has_content = isinstance(special_notes_list, list) and len(special_notes_list) > 0
 
-    if not special_notes_done and not has_content:
+    if not is_asked_or_done(special_notes_status) and not special_notes_done and not has_content:
         return "special_notes"
 
-    # 11. 复查SKIPPED字段（进入阶段6前）
-    skipped_fields_reviewed = fields_status.get("skipped_fields_reviewed", False)
-    if not skipped_fields_reviewed:
-        skipped_fields = get_skipped_fields(fields_status)
-        if skipped_fields:
-            return f"review_{skipped_fields[0]}"  # 返回 review_xxx 表示复查
+    # 11. ASKED 状态的字段不强制复查，让流程更顺畅
+    # 确认阶段会显示未填写的字段，给用户二次机会
 
     # All done
     return None

@@ -154,11 +154,34 @@ class CollectorAgent:
         updated_fields = router_output.updated_fields_status.copy() if router_output.updated_fields_status else fields_status.copy()
         validation_results = {}
 
-        # 处理 skip intent - 用户想跳过当前字段
-        if router_output.intent.primary.value == "skip":
-            skip_field = router_output.response_strategy.guide_to_field or target_field
-            logger.info(f"User wants to skip field: {skip_field}")
-            updated_fields = self._mark_field_skipped(updated_fields, skip_field)
+        # ============ 处理 skip intent - 完全由 Router 决策驱动 ============
+        # Router Agent 已经分析了用户意图和当前阶段，它的输出告诉我们：
+        # 1. intent.primary = "skip" / "express_confusion" → 用户想跳过
+        # 2. phase_after_update → Router 决定的下一个阶段
+        # 3. guide_to_field → Router 决定引导到的下一个字段
+        #
+        # 阶段到字段的映射（用于确定跳过哪个字段）
+        phase_to_field = {
+            1: "people_count",    # Phase.PEOPLE_COUNT
+            2: "from_address",    # Phase.ADDRESS (简化：只标记搬出地址)
+            3: "move_date",       # Phase.DATE
+            4: "items",           # Phase.ITEMS
+        }
+
+        skip_intents = ["skip", "express_confusion"]
+        is_skip_intent = router_output.intent.primary.value in skip_intents
+
+        # 从 fields_status 推断当前阶段（更新前）
+        from app.core.phase_inference import infer_phase
+        current_phase_before = infer_phase(fields_status)
+        router_phase_after = router_output.phase_after_update
+
+        # 如果用户表示跳过，且 Router 决定推进到下一个阶段，标记当前阶段的字段为 SKIPPED
+        if is_skip_intent and router_phase_after > current_phase_before.value:
+            skip_field = phase_to_field.get(current_phase_before.value)
+            if skip_field:
+                logger.info(f"Router决策: 用户跳过 phase {current_phase_before.value} ({skip_field}), 进入 phase {router_phase_after}")
+                updated_fields = self._mark_field_skipped(updated_fields, skip_field)
 
         # 处理 complete intent - 用户表示完成（如 special_notes 的"没有了"）
         if router_output.intent.primary.value == "complete":
@@ -349,6 +372,12 @@ class CollectorAgent:
                     "error": chunk.get("error", "Unknown error")
                 }
                 return
+
+        # 标记当前询问的字段为 ASKED（如果还是 NOT_COLLECTED）
+        # 这样非必填字段问过一次后就不会阻塞流程
+        if next_field:
+            updated_fields = self._mark_field_asked(updated_fields, next_field)
+            logger.info(f"Marked field as ASKED: {next_field}")
 
         # Let LLM decide quick options based on context
         # 关键：把 Agent 刚刚生成的回复也加入到上下文中，这样 LLM 才能根据实际回复内容判断选项
@@ -981,7 +1010,26 @@ class CollectorAgent:
         """Mark a field as skipped when user chooses to skip"""
         updated = fields_status.copy()
 
-        if field_name == "move_date":
+        if field_name == "people_count":
+            updated["people_count"] = 0
+            updated["people_count_status"] = FieldStatus.SKIPPED.value
+            logger.info(f"Marked people_count as skipped")
+
+        elif field_name == "from_address":
+            if "from_address" not in updated or not isinstance(updated["from_address"], dict):
+                updated["from_address"] = {}
+            updated["from_address"]["status"] = FieldStatus.SKIPPED.value
+            updated["from_address"]["value"] = "用户跳过"
+            logger.info(f"Marked from_address as skipped")
+
+        elif field_name == "to_address":
+            if "to_address" not in updated or not isinstance(updated["to_address"], dict):
+                updated["to_address"] = {}
+            updated["to_address"]["status"] = FieldStatus.SKIPPED.value
+            updated["to_address"]["value"] = "用户跳过"
+            logger.info(f"Marked to_address as skipped")
+
+        elif field_name == "move_date":
             if "move_date" not in updated or not isinstance(updated["move_date"], dict):
                 updated["move_date"] = {}
             updated["move_date"]["status"] = FieldStatus.SKIPPED.value
@@ -999,6 +1047,12 @@ class CollectorAgent:
                 updated["from_address"] = {}
             updated["from_address"]["building_type"] = "跳过"
             logger.info(f"Marked from_building_type as skipped")
+
+        elif field_name == "from_room_type":
+            if "from_address" not in updated or not isinstance(updated["from_address"], dict):
+                updated["from_address"] = {}
+            updated["from_address"]["room_type"] = "跳过"
+            logger.info(f"Marked from_room_type as skipped")
 
         elif field_name == "from_floor_elevator":
             if "from_floor_elevator" not in updated or not isinstance(updated["from_floor_elevator"], dict):
@@ -1020,6 +1074,91 @@ class CollectorAgent:
         elif field_name == "special_notes":
             updated["special_notes_done"] = True
             logger.info(f"Marked special_notes as done (skipped)")
+
+        return updated
+
+    def _mark_field_asked(self, fields_status: Dict[str, Any], field_name: str) -> Dict[str, Any]:
+        """
+        Mark a field as ASKED when Collector generates a question for it.
+        Only marks if field is still NOT_COLLECTED.
+        This allows fields to not block phase progression after being asked.
+        """
+        updated = fields_status.copy()
+
+        # 所有可标记为 ASKED 的字段
+        askable_fields = [
+            "people_count", "from_address", "to_address", "move_date", "items",
+            "from_floor_elevator", "to_floor_elevator", "packing_service", "special_notes"
+        ]
+
+        if field_name not in askable_fields:
+            return updated
+
+        if field_name == "people_count":
+            current_status = updated.get("people_count_status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["people_count_status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked people_count as ASKED")
+
+        elif field_name == "from_address":
+            if "from_address" not in updated or not isinstance(updated["from_address"], dict):
+                updated["from_address"] = {}
+            current_status = updated["from_address"].get("status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["from_address"]["status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked from_address as ASKED")
+
+        elif field_name == "to_address":
+            if "to_address" not in updated or not isinstance(updated["to_address"], dict):
+                updated["to_address"] = {}
+            current_status = updated["to_address"].get("status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["to_address"]["status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked to_address as ASKED")
+
+        elif field_name == "move_date":
+            if "move_date" not in updated or not isinstance(updated["move_date"], dict):
+                updated["move_date"] = {}
+            current_status = updated["move_date"].get("status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["move_date"]["status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked move_date as ASKED")
+
+        elif field_name == "items":
+            if "items" not in updated or not isinstance(updated["items"], dict):
+                updated["items"] = {"list": []}
+            current_status = updated["items"].get("status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["items"]["status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked items as ASKED")
+
+        elif field_name == "from_floor_elevator":
+            if "from_floor_elevator" not in updated or not isinstance(updated["from_floor_elevator"], dict):
+                updated["from_floor_elevator"] = {}
+            current_status = updated["from_floor_elevator"].get("status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["from_floor_elevator"]["status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked from_floor_elevator as ASKED")
+
+        elif field_name == "to_floor_elevator":
+            if "to_floor_elevator" not in updated or not isinstance(updated["to_floor_elevator"], dict):
+                updated["to_floor_elevator"] = {}
+            current_status = updated["to_floor_elevator"].get("status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["to_floor_elevator"]["status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked to_floor_elevator as ASKED")
+
+        elif field_name == "packing_service":
+            current_status = updated.get("packing_service_status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["packing_service_status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked packing_service as ASKED")
+
+        elif field_name == "special_notes":
+            current_status = updated.get("special_notes_status", FieldStatus.NOT_COLLECTED.value)
+            if current_status == FieldStatus.NOT_COLLECTED.value:
+                updated["special_notes_status"] = FieldStatus.ASKED.value
+                logger.info(f"Marked special_notes as ASKED")
 
         return updated
 
