@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional, List, AsyncGenerator
 from dataclasses import dataclass
 
 from app.core import get_llm_client
+from app.core.state_machine import process_intent_transitions
 from app.models.fields import FieldStatus, Phase
 from app.models.schemas import RouterOutput, AgentType
 from app.services.field_validator import get_field_validator, ValidationResult
@@ -193,6 +194,20 @@ class CollectorAgent:
             elif current_phase_before.value == 4:
                 # 阶段4：物品收集完成，由 handle_items_confirmed 管理，这里不做特殊处理
                 logger.info(f"User indicated items collection complete in phase 4")
+
+        # ============ 状态机处理地址确认/拒绝 ============
+        # 使用状态机处理 confirm/reject intent（阶段2地址确认场景）
+        # 规则：(address, needs_confirmation, confirm) → 设置 needs_confirmation=False, status=baseline
+        # 规则：(address, needs_confirmation, reject) → 清除地址，重新收集
+        intent_value = router_output.intent.primary.value
+        if intent_value in ["confirm", "reject"]:
+            updated_fields, affected_fields = process_intent_transitions(
+                intent=intent_value,
+                fields_status=updated_fields,
+                context={"current_phase": current_phase_before.value}
+            )
+            if affected_fields:
+                logger.info(f"[STATE_MACHINE] Processed {intent_value} intent, affected fields: {affected_fields}")
 
         # 后备检查：如果用户在阶段5说了完成标志词，但 Router 没有识别为 intent=complete
         # 通过直接检测用户消息来确保 special_notes_done 被正确设置

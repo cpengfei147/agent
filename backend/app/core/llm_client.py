@@ -163,15 +163,18 @@ class OpenAIClient(LLMClient):
             if response_format:
                 kwargs["response_format"] = response_format
 
-            # Start Langfuse generation tracking (新版 API: start_observation)
+            # Start Langfuse generation tracking (独立 try-except，不影响 LLM 调用)
             if langfuse and trace_name:
-                generation = langfuse.start_observation(
-                    as_type="generation",
-                    name=trace_name,
-                    model=self.model,
-                    input=messages,
-                    metadata=trace_metadata or {}
-                )
+                try:
+                    generation = langfuse.generation(
+                        name=trace_name,
+                        model=self.model,
+                        input=messages,
+                        metadata=trace_metadata or {}
+                    )
+                except Exception as e:
+                    logger.warning(f"Langfuse tracking failed (will continue without tracing): {e}")
+                    generation = None
 
             response = await self.client.chat.completions.create(**kwargs)
 
@@ -196,27 +199,31 @@ class OpenAIClient(LLMClient):
                     for tc in message.tool_calls
                 ]
 
-            # End Langfuse generation tracking (新版 API: 先 update 再 end)
+            # End Langfuse generation tracking
             if generation:
-                generation.update(
-                    output=message.content,
-                    usage_details={
-                        "input": response.usage.prompt_tokens if response.usage else 0,
-                        "output": response.usage.completion_tokens if response.usage else 0,
-                        "total": response.usage.total_tokens if response.usage else 0
-                    }
-                )
-                generation.end()
-                langfuse.flush()
+                try:
+                    generation.end(
+                        output=message.content,
+                        usage={
+                            "input": response.usage.prompt_tokens if response.usage else 0,
+                            "output": response.usage.completion_tokens if response.usage else 0,
+                            "total": response.usage.total_tokens if response.usage else 0
+                        }
+                    )
+                    langfuse.flush()
+                except Exception as e:
+                    logger.warning(f"Langfuse end tracking failed: {e}")
 
             return result
 
         except Exception as e:
             logger.error(f"OpenAI API error: {e}")
             if generation:
-                generation.update(output=None, level="ERROR", status_message=str(e))
-                generation.end()
-                langfuse.flush()
+                try:
+                    generation.end(output=None, level="ERROR", status_message=str(e))
+                    langfuse.flush()
+                except Exception:
+                    pass
             return {
                 "content": None,
                 "error": str(e)

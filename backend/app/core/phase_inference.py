@@ -102,7 +102,15 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
     from_status = from_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(from_addr, dict) else FieldStatus.NOT_COLLECTED.value
     to_status = to_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(to_addr, dict) else FieldStatus.NOT_COLLECTED.value
 
-    if not is_skipped_or_done(from_status) or not is_skipped_or_done(to_status):
+    # 特殊处理：已验证的地址（verification_status=verified）不阻塞流程，允许用户继续
+    # 地址确认可以稍后进行，不需要强制用户立即确认
+    from_verified = from_addr.get("verification_status") == "verified" if isinstance(from_addr, dict) else False
+    to_verified = to_addr.get("verification_status") == "verified" if isinstance(to_addr, dict) else False
+
+    from_can_proceed = is_skipped_or_done(from_status) or from_verified
+    to_can_proceed = is_skipped_or_done(to_status) or to_verified
+
+    if not from_can_proceed or not to_can_proceed:
         return Phase.ADDRESS
 
     # 搬出地址确认后，追问建筑类型和户型（仍在阶段2）
