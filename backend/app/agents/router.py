@@ -172,6 +172,7 @@ class RouterAgent:
                 style=style,
                 should_acknowledge=strategy_data.get("should_acknowledge", True),
                 guide_to_field=strategy_data.get("guide_to_field"),
+                skip_field=strategy_data.get("skip_field"),  # 解析 skip_field
                 include_options=strategy_data.get("include_options", True)
             )
 

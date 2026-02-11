@@ -155,19 +155,21 @@ class CollectorAgent:
         updated_fields = router_output.updated_fields_status.copy() if router_output.updated_fields_status else fields_status.copy()
         validation_results = {}
 
+        # BUG FIX: 保留来自 session 的地址确认状态
+        # 当用户通过按钮确认地址后，handle_address_confirmed 设置 needs_confirmation=False
+        # 但 Router 可能返回旧的状态，导致确认对话框重复出现
+        for addr_field in ["from_address", "to_address"]:
+            session_addr = fields_status.get(addr_field, {})
+            if isinstance(session_addr, dict) and session_addr.get("needs_confirmation") is False:
+                # Session 中已确认的地址，确保 Collector 不会覆盖
+                if addr_field in updated_fields and isinstance(updated_fields[addr_field], dict):
+                    updated_fields[addr_field]["needs_confirmation"] = False
+                    updated_fields[addr_field]["status"] = session_addr.get("status", "baseline")
+                    logger.info(f"[BUG_FIX] Preserved needs_confirmation=False for {addr_field} from session")
+
         # ============ 处理 skip intent - 完全由 Router 决策驱动 ============
-        # Router Agent 已经分析了用户意图和当前阶段，它的输出告诉我们：
-        # 1. intent.primary = "skip" / "express_confusion" → 用户想跳过
-        # 2. phase_after_update → Router 决定的下一个阶段
-        # 3. guide_to_field → Router 决定引导到的下一个字段
-        #
-        # 阶段到字段的映射（用于确定跳过哪个字段）
-        phase_to_field = {
-            1: "people_count",    # Phase.PEOPLE_COUNT
-            2: "from_address",    # Phase.ADDRESS (简化：只标记搬出地址)
-            3: "move_date",       # Phase.DATE
-            4: "items",           # Phase.ITEMS
-        }
+        # Router Agent 输出 skip_field 明确指出用户要跳过的具体字段
+        # 这避免了硬编码的阶段到字段映射
 
         skip_intents = ["skip", "express_confusion"]
         is_skip_intent = router_output.intent.primary.value in skip_intents
@@ -175,14 +177,31 @@ class CollectorAgent:
         # 从 fields_status 推断当前阶段（更新前）
         from app.core.phase_inference import infer_phase
         current_phase_before = infer_phase(fields_status)
-        router_phase_after = router_output.phase_after_update
 
-        # 如果用户表示跳过，且 Router 决定推进到下一个阶段，标记当前阶段的字段为 SKIPPED
-        if is_skip_intent and router_phase_after > current_phase_before.value:
-            skip_field = phase_to_field.get(current_phase_before.value)
+        # 如果用户表示跳过，使用 Router 指定的 skip_field
+        if is_skip_intent:
+            skip_field = router_output.response_strategy.skip_field
             if skip_field:
-                logger.info(f"Router决策: 用户跳过 phase {current_phase_before.value} ({skip_field}), 进入 phase {router_phase_after}")
-                updated_fields = self._mark_field_skipped(updated_fields, skip_field)
+                logger.info(f"Router 指定跳过字段: {skip_field}")
+                # 检查该字段是否正在收集中 (in_progress)
+                field_data = updated_fields.get(skip_field, {})
+                if isinstance(field_data, dict) and field_data.get("status") == "in_progress":
+                    # 字段正在收集中，用户跳过子问题，接受当前已有的信息
+                    if skip_field == "move_date":
+                        # move_date: 如果有月份就够了，标记为 baseline
+                        if field_data.get("month"):
+                            updated_fields["move_date"]["status"] = FieldStatus.BASELINE.value
+                            logger.info(f"move_date 已有月份 {field_data.get('month')}，接受当前信息，标记为 baseline")
+                        else:
+                            updated_fields = self._mark_field_skipped(updated_fields, skip_field)
+                    else:
+                        # 其他字段：如果有部分数据可以接受，否则标记为 skipped
+                        updated_fields = self._mark_field_skipped(updated_fields, skip_field)
+                else:
+                    # 字段未开始或其他状态，直接标记为 skipped
+                    updated_fields = self._mark_field_skipped(updated_fields, skip_field)
+            else:
+                logger.warning(f"Router 未指定 skip_field，intent={router_output.intent.primary.value}")
 
         # 处理 complete intent - 用户表示完成
         # 根据当前阶段判断是哪个字段完成，而不是硬编码关键词匹配

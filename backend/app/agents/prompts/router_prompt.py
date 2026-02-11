@@ -40,9 +40,15 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - modify_info: 修改已填信息（如"地址说错了"）
 - confirm: 确认（如"没问题"、"对的"）
 - reject: 否定（如"不对"、"错了"）
-- skip: 跳过当前问题（如"先不说这个"）
+- skip: 跳过当前问题（如"先不说这个"、"没定下来"、"不知道"、"继续吧"）
+  - **重要**：当 intent=skip 时，必须同时输出 skip_field 指明跳过哪个字段
 - complete: 表示没有更多了（如"没有了"、"就这些"、"没有其他行李了"）
 - add_more: 要继续添加物品（如"继续添加"、"还要添加"、"再加一些"）
+
+## ⚠️ "继续吧" 的特殊处理
+当用户说"继续吧"、"继续"、"好的继续"时：
+- 如果当前正在追问某个字段的子问题（如日期的上旬/中旬/下旬）→ intent="skip"，skip_field=当前字段
+- 用户的意思是"跳过这个问题，继续下一步"，不是"确认当前字段"
 
 ## 咨询相关
 - ask_price: 问价格（如"大概多少钱"）
@@ -153,7 +159,15 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - from_room_type: {{"raw_value": "3LDK", "parsed_value": "3LDK", "needs_verification": false, "confidence": 0.9}}
 注意：日本户型格式为 数字+字母（R/K/DK/LDK/SLDK等），直接保留原值
 
-## 示例6：搬家日期（具体日期）
+## ## 示例5.3：用户在物品阶段想修改其他信息
+上下文：当前 phase=4（物品阶段），items.status="not_collected" 或 "asked"
+用户说："我能改一下日期么" / "日期要改成下个月中旬"
+- intent.primary: "modify_info"
+- 提取新的信息（如 move_date）
+- **guide_to_field: "items"**（修改完成后引导回物品收集！）
+- 说明：用户暂时离开物品收集去修改其他信息，修改后应该引导回来继续
+
+示例6：搬家日期（具体日期）
 用户说："3月15日搬家"
 应提取：
 - move_date: {{"raw_value": "3月15日", "parsed_value": {{"value": "3月15日", "year": 2026, "month": 3, "day": 15}}, "needs_verification": false, "confidence": 0.9}}
@@ -344,13 +358,23 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - 用户说："没想好呢" / "还没定" / "不清楚" / "不确定" / "还在考虑"
 - intent.primary: "skip"（用户想跳过当前问题）
 - phase_after_update: 4（进入物品阶段）
+- **skip_field: "move_date"**（明确指出跳过的是日期字段）
 - **guide_to_field: "items"**（跳过日期，引导到物品收集）
 - 说明：用户暂时无法提供日期信息，应该先跳过，继续收集其他信息
+
+示例7.1.1：用户已提供月份但跳过具体日期/时段（子问题跳过）
+- 当前状态：move_date.status="in_progress"（已有月份，正在追问上旬/中旬/下旬）
+- 用户说："没定下来" / "不确定具体时间" / "还没想好"
+- intent.primary: "skip"
+- **skip_field: "move_date"**（明确指出跳过的是 move_date 的子问题）
+- **guide_to_field: "to_address"** 或下一个待收集字段
+- 说明：用户已提供月份，跳过时段追问，接受当前信息，继续收集其他字段
 
 示例7.2：用户不确定搬入地址，跳过进入日期阶段
 - 当前状态：phase=2（正在问地址），to_address.status="not_collected"
 - 用户说："还没找好房子" / "不知道搬去哪" / "还在看房"
 - intent.primary: "skip"
+- **skip_field: "to_address"**
 - phase_after_update: 3（进入日期阶段）
 - **guide_to_field: "move_date"**
 - 说明：用户暂时不知道搬入地址，跳过继续
@@ -359,8 +383,18 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - 当前状态：phase=4（正在问物品），items.status="not_collected"
 - 用户说："还没整理" / "不知道有多少"
 - intent.primary: "skip"
+- **skip_field: "items"**
 - phase_after_update: 5（进入其他信息阶段）
 - **guide_to_field: "from_floor_elevator"** 或下一个待收集字段
+
+示例7.4：用户说"继续吧"跳过当前追问
+- 当前状态：move_date.status="in_progress"（已有月份，Agent刚问了上旬/中旬/下旬）
+- 用户说："继续吧" / "继续" / "好的，继续"
+- intent.primary: "skip"（用户想跳过当前追问，继续下一步）
+- **skip_field: "move_date"**（跳过的是 move_date 的子问题）
+- phase_after_update: 4（进入物品阶段）
+- **guide_to_field: "items"**
+- ⚠️ **错误做法**：intent="confirm", guide_to_field="move_date"（"继续"不是确认当前字段！）
 
 示例8：搬出地址确认后追问建筑类型
 - 当前状态：from_address.status="baseline", from_address.building_type=null
@@ -457,6 +491,12 @@ ROUTER_SYSTEM_PROMPT = """# 角色
 - 用户一次说多个信息 → 都提取，guide_to_field = 还缺的信息
 - **地址确认后追问建筑类型和户型是必须的流程，不能跳过**
 
+## ⚠️ 物品阶段的特殊处理
+当 items.status 为 "not_collected" 或 "asked" 或 "in_progress" 时：
+- 如果用户问问题或修改其他信息 → 处理完后 **guide_to_field = "items"**
+- 物品收集需要用户上传图片或从目录选择，不能跳过
+- 即使用户暂时离开，也要引导他们回来完成物品收集
+
 # 红线规则（必须遵守）
 - R1: from_address 只有在有 postal_code 时才能标记为 baseline
 - R2: to_address 必须解析出 city（市/区/町村）才能标记为 baseline
@@ -518,6 +558,7 @@ ROUTER_SYSTEM_PROMPT = """# 角色
     "style": "friendly/professional/empathetic/concise",
     "should_acknowledge": true/false,
     "guide_to_field": "下一个要收集的字段或null",
+    "skip_field": "当intent=skip时，指明要跳过的具体字段，否则为null",
     "include_options": true/false
   }}
 }}

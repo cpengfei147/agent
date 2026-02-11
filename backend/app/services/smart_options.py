@@ -64,9 +64,18 @@ async def get_smart_quick_options(
     recent_messages = recent_messages or []
 
     # === 固定选项场景 ===
-    # 优先级：next_field > 阶段判断 > LLM智能判断
+    # 优先级：OPENING阶段 > next_field > 阶段判断 > LLM智能判断
 
-    # 1. 首先根据 next_field 判断（最准确，代表当前正在询问的字段）
+    # 0. 首先检查是否是 OPENING 阶段（所有字段都未收集）
+    # 这个优先级最高，因为开场白应该显示介绍性选项而不是直接问人数
+    from app.core.phase_inference import infer_phase
+    from app.models.fields import Phase
+
+    current_phase = infer_phase(fields_status)
+    if current_phase == Phase.OPENING:
+        return ["获取搬家报价", "咨询搬家问题", "了解服务内容"]
+
+    # 1. 然后根据 next_field 判断（最准确，代表当前正在询问的字段）
     # 人数：固定选项
     if next_field == "people_count":
         return ["单身", "2~3人", "4人以上"]
@@ -107,22 +116,38 @@ async def get_smart_quick_options(
         # 没有物品时不显示快捷选项，让用户使用上传图片或从目录选择
         return []
 
-    # 2. 然后根据阶段判断（当 next_field 没有匹配时）
-    from app.core.phase_inference import get_completion_info, infer_phase
-    from app.models.fields import Phase
+    # 地址字段：不显示快捷选项，让用户直接输入
+    if next_field in ["from_address", "to_address"]:
+        return []
 
-    # 开场白阶段：所有字段都未收集且没有指定 next_field
-    current_phase = infer_phase(fields_status)
-    if current_phase == Phase.OPENING and not next_field:
-        return ["获取搬家报价", "咨询搬家问题", "了解服务内容"]
+    # 日期字段：显示月份选项
+    if next_field == "move_date":
+        move_date = fields_status.get("move_date", {})
+        if isinstance(move_date, dict):
+            # 如果已有月份，询问时段
+            if move_date.get("month") and not move_date.get("period") and not move_date.get("day"):
+                return ["上旬", "中旬", "下旬"]
+            # 如果已有日期，询问时间
+            if move_date.get("value") and not move_date.get("time_slot"):
+                return ["上午", "下午", "没有指定"]
+        # 默认：询问月份
+        return ["这个月", "下个月", "再下个月"]
+
+    # 2. 然后根据阶段判断（当 next_field 没有匹配时）
+    from app.core.phase_inference import get_completion_info
 
     # 阶段6确认阶段：如果用户还未确认，显示确认相关选项
     completion_info = get_completion_info(fields_status)
     if completion_info["can_submit"] and not fields_status.get("user_confirmed_submit"):
         return ["确认无误，发送报价", "需要修改"]
 
-    # === 3. 其他所有场景由LLM智能判断 ===
+    # === 3. 其他场景：返回空选项（避免额外 LLM 调用以加快响应） ===
+    # 性能优化：不再为未知场景调用 LLM，直接返回空选项
+    # 如果需要 LLM 智能判断，可以将下面的 return [] 注释掉
+    logger.debug(f"No fixed options for next_field={next_field}, returning empty")
+    return []
 
+    # === [可选] LLM智能判断 - 默认禁用以提升性能 ===
     # Build recent context
     recent_context = ""
     for msg in recent_messages[-6:]:

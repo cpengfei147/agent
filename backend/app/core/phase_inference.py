@@ -107,8 +107,28 @@ def infer_phase(fields_status: Dict[str, Any]) -> Phase:
     from_verified = from_addr.get("verification_status") == "verified" if isinstance(from_addr, dict) else False
     to_verified = to_addr.get("verification_status") == "verified" if isinstance(to_addr, dict) else False
 
-    from_can_proceed = is_skipped_or_done(from_status) or from_verified
-    to_can_proceed = is_skipped_or_done(to_status) or to_verified
+    # 获取后续字段状态，用于判断 ASKED 是否可以跳过
+    move_date = fields_status.get("move_date", {})
+    date_status = move_date.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(move_date, dict) else FieldStatus.NOT_COLLECTED.value
+    items = fields_status.get("items", {})
+    items_status = items.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(items, dict) else FieldStatus.NOT_COLLECTED.value
+
+    # ASKED 状态只有在后续字段已经有实际收集的值时才允许跳过
+    # 注意：SKIPPED 不算实际进展，只有 BASELINE/IDEAL 才算用户真正跳过去收集了后续字段
+    def has_actual_later_progress(from_field: bool = False) -> bool:
+        """检查后续字段是否已经有实际收集的值（不包括 SKIPPED）"""
+        if from_field:
+            # from_address 的后续是 to_address、date、items
+            return is_done(to_status) or is_done(date_status) or is_done(items_status)
+        else:
+            # to_address 的后续是 date、items
+            return is_done(date_status) or is_done(items_status)
+
+    from_asked_can_skip = from_status == FieldStatus.ASKED.value and has_actual_later_progress(from_field=True)
+    to_asked_can_skip = to_status == FieldStatus.ASKED.value and has_actual_later_progress(from_field=False)
+
+    from_can_proceed = is_skipped_or_done(from_status) or from_verified or from_asked_can_skip
+    to_can_proceed = is_skipped_or_done(to_status) or to_verified or to_asked_can_skip
 
     if not from_can_proceed or not to_can_proceed:
         return Phase.ADDRESS
@@ -217,9 +237,10 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
         return "people_count"
 
     # 2. Check from_address - 地址可以跳过（用户明确说跳过才跳过）
+    # ASKED 状态也跳过：用户已被问过，不再重复返回
     from_addr = fields_status.get("from_address", {})
     from_status = from_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(from_addr, dict) else FieldStatus.NOT_COLLECTED.value
-    if not is_skipped_or_done(from_status):
+    if not is_asked_or_done(from_status):
         return "from_address"
 
     # 2.1-2.2 建筑类型和户型：主要由 Router LLM 自主决定
@@ -240,9 +261,10 @@ def get_next_priority_field(fields_status: Dict[str, Any]) -> Optional[str]:
                 return "from_room_type"
 
     # 3. Check to_address - 地址可以跳过（用户明确说跳过才跳过）
+    # ASKED 状态也跳过：用户已被问过，不再重复返回
     to_addr = fields_status.get("to_address", {})
     to_status = to_addr.get("status", FieldStatus.NOT_COLLECTED.value) if isinstance(to_addr, dict) else FieldStatus.NOT_COLLECTED.value
-    if not is_skipped_or_done(to_status):
+    if not is_asked_or_done(to_status):
         return "to_address"
 
     # 4. Check move_date - 日期可以跳过（用户明确说跳过才跳过）

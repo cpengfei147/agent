@@ -79,6 +79,9 @@ function App() {
   // 已添加的地址卡片（防止重复）
   const addedAddressCardsRef = useRef({ from: false, to: false })
 
+  // 已添加的物品评估卡片（防止重复）
+  const itemEvalCardAddedRef = useRef(false)
+
   // 多选状态（阶段5特殊注意事项）
   const [selectedOptions, setSelectedOptions] = useState([])
 
@@ -227,9 +230,20 @@ function App() {
             lastOptionsRef.current = newOptions
           }
         }
-        // 处理地址卡片 - 嵌入消息流（带验证动画）
+        // 处理地址卡片和物品评估卡片 - 嵌入消息流
         if (data.ui_component) {
           const uiType = data.ui_component.type
+
+          // 处理物品评估卡片 - 嵌入消息流
+          if (uiType === 'item_evaluation' && !itemEvalCardAddedRef.current) {
+            itemEvalCardAddedRef.current = true
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              type: 'item_eval_card',
+              streaming: false
+            }])
+          }
+
           if (uiType === 'address_confirm' || uiType === 'address_selection') {
             const addressType = data.ui_component.data?.address_type
 
@@ -360,6 +374,7 @@ function App() {
     textQueueRef.current = []
     isTypingRef.current = false
     addedAddressCardsRef.current = { from: false, to: false }
+    itemEvalCardAddedRef.current = false
   }
 
   // 发送消息
@@ -371,9 +386,15 @@ function App() {
     const isAddItemRequest = addItemKeywords.some(kw => content.includes(kw))
 
     if (isAddItemRequest && currentPhase === 4) {
-      // 显示物品识别卡片
+      // 显示物品识别卡片（嵌入消息流）
       setUiComponent({ type: 'item_evaluation' })
       setQuickOptions([])
+      setPendingItems([])
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        type: 'item_eval_card',
+        streaming: false
+      }])
       setInputValue('')
       return
     }
@@ -391,12 +412,18 @@ function App() {
     // 检查是否是多选选项（阶段5特殊注意事项）
     const multiSelectOptions = ['有宜家家具', '有钢琴需要搬运', '空调安装', '空调拆卸', '不用品回收']
 
-    // 继续添加物品 - 重新显示物品识别卡片
+    // 继续添加物品 - 将新的物品识别卡片嵌入消息流
     if (option === '继续添加' || option === '上传照片') {
       setUiComponent({ type: 'item_evaluation' })
       setQuickOptions([])
       setPendingItems([])  // 清空之前的待确认项
       setItemsJustConfirmed(false)  // 重置确认状态
+      // 嵌入新的物品评估卡片到消息流
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        type: 'item_eval_card',
+        streaming: false
+      }])
       return
     }
 
@@ -655,6 +682,11 @@ function App() {
       return renderEmbeddedItemsCard(msg.items, index)
     }
 
+    // 特殊处理：嵌入式物品评估卡片
+    if (msg.type === 'item_eval_card') {
+      return renderEmbeddedItemEvalCard(index)
+    }
+
     // 特殊处理：嵌入式地址确认卡片
     if (msg.type === 'address_confirm_card') {
       return renderEmbeddedAddressConfirmCard(msg, index)
@@ -909,7 +941,7 @@ function App() {
     )
   }
 
-  // 渲染物品评估卡片
+  // 渲染物品评估卡片（独立版本，用于后备渲染）
   const renderItemEvalCard = () => (
     <Card className="ui-card item-eval-card">
       <div className="card-image">
@@ -928,6 +960,64 @@ function App() {
       </div>
     </Card>
   )
+
+  // 渲染嵌入式物品评估卡片（嵌入消息流）
+  const renderEmbeddedItemEvalCard = (index) => {
+    // 检查物品是否已完成（用户确认了物品列表）
+    const itemsField = fieldsStatus.items || {}
+    const isCompleted = itemsField.status === 'baseline' || itemsField.status === 'ideal'
+
+    // 检查这个卡片之后是否有 items_card（表示已经确认了物品）
+    // 如果有，这个 eval 卡片就不再显示（避免重复）
+    const hasConfirmedCardAfter = messages.slice(index + 1).some(m => m.type === 'items_card')
+    if (hasConfirmedCardAfter || (isCompleted && confirmedItems.length > 0)) {
+      // 物品已确认，不显示这个卡片（会由 items_card 显示）
+      return null
+    }
+
+    // 如果正在识别中，显示识别进度
+    if (isRecognizing) {
+      return (
+        <div key={index} className="message-wrapper assistant">
+          <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
+          {renderRecognitionProgress()}
+        </div>
+      )
+    }
+
+    // 如果有待确认的物品，显示识别结果
+    if (pendingItems.length > 0) {
+      return (
+        <div key={index} className="message-wrapper assistant">
+          <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
+          {renderRecognitionResult()}
+        </div>
+      )
+    }
+
+    // 否则显示正常的物品评估卡片
+    return (
+      <div key={index} className="message-wrapper assistant">
+        <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
+        <Card className="ui-card item-eval-card">
+          <div className="card-image">
+            <PictureOutlined style={{ fontSize: 48, color: '#9ca3af' }} />
+            <span>示意图</span>
+          </div>
+          <div className="card-body">
+            <h3>智能物品识别</h3>
+            <p>通过我们的AI识别您的家具照片以加快报价流程，或从我们的目录中手动选择物品。</p>
+            <Button type="primary" icon={<PictureOutlined />} block onClick={handleUploadImage}>
+              上传图片
+            </Button>
+            <Button icon={<UnorderedListOutlined />} block style={{ marginTop: 8 }} onClick={() => sendMessage('从目录中选择')}>
+              从目录中选择
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
+  }
 
   // 渲染识别进度
   const renderRecognitionProgress = () => (
@@ -1423,12 +1513,7 @@ function App() {
         {messages.map(renderMessage)}
 
         {/* UI Components based on backend */}
-        {uiComponent.type === 'item_evaluation' && !isRecognizing && !pendingItems.length && (
-          <div className="message-wrapper assistant">
-            <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
-            {renderItemEvalCard()}
-          </div>
-        )}
+        {/* item_evaluation 卡片现在嵌入消息流中，不再独立渲染 */}
 
         {uiComponent.type === 'address_verify' && (
           <div className="message-wrapper assistant">
@@ -1453,26 +1538,13 @@ function App() {
           </div>
         )}
 
-        {isRecognizing && (
-          <div className="message-wrapper assistant">
-            <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
-            {renderRecognitionProgress()}
-          </div>
-        )}
+        {/* 识别进度和待确认物品现在在嵌入式卡片中处理 */}
 
         {/* 地址验证进度 */}
         {isVerifyingAddress && (
           <div className="message-wrapper assistant">
             <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
             {renderAddressVerifyProgress()}
-          </div>
-        )}
-
-        {/* 待确认的物品卡片（确认后会嵌入消息流，这里只显示未确认的） */}
-        {pendingItems.length > 0 && !isRecognizing && (
-          <div className="message-wrapper assistant">
-            <Avatar className="avatar" style={{ backgroundColor: '#6366f1' }}>E</Avatar>
-            {renderRecognitionResult()}
           </div>
         )}
 

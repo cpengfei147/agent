@@ -194,6 +194,7 @@ class ResponseStrategy(BaseModel):
     style: ResponseStyle = ResponseStyle.FRIENDLY
     should_acknowledge: bool = True
     guide_to_field: Optional[str] = None
+    skip_field: Optional[str] = None  # 当 intent=skip 时，指明要跳过的具体字段
     include_options: bool = True
 
 

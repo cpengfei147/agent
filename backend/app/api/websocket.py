@@ -264,7 +264,60 @@ async def process_message(
     logger.info(f"Router decision: intent={router_output.intent.primary.value}, "
                 f"emotion={router_output.user_emotion.value}, "
                 f"agent_type={agent_type.value}, "
-                f"guide_to_field={router_output.response_strategy.guide_to_field}")
+                f"guide_to_field={router_output.response_strategy.guide_to_field}, "
+                f"skip_field={router_output.response_strategy.skip_field}")
+
+    # Step 1.5: Pre-process skip intent BEFORE agent dispatch
+    # 无论路由到哪个 agent，skip 逻辑都需要处理
+    from app.models.schemas import IntentType
+    from app.models.fields import FieldStatus
+    skip_intents = [IntentType.SKIP, IntentType.EXPRESS_CONFUSION]
+    if router_output.intent.primary in skip_intents:
+        skip_field = router_output.response_strategy.skip_field
+        if skip_field:
+            fields_status = session["fields_status"]
+            field_data = fields_status.get(skip_field, {})
+
+            if isinstance(field_data, dict) and field_data.get("status") == "in_progress":
+                # 字段正在收集中，用户跳过子问题，接受当前已有的信息
+                if skip_field == "move_date" and field_data.get("month"):
+                    fields_status["move_date"]["status"] = FieldStatus.BASELINE.value
+                    logger.info(f"[SKIP_PREPROCESS] move_date 有月份 {field_data.get('month')}，标记为 baseline")
+                else:
+                    # 标记为 skipped
+                    if skip_field == "move_date":
+                        fields_status["move_date"] = fields_status.get("move_date", {})
+                        fields_status["move_date"]["status"] = FieldStatus.SKIPPED.value
+                    elif skip_field == "to_address":
+                        fields_status["to_address"] = fields_status.get("to_address", {})
+                        fields_status["to_address"]["status"] = FieldStatus.SKIPPED.value
+                    elif skip_field == "items":
+                        fields_status["items"] = fields_status.get("items", {"list": []})
+                        fields_status["items"]["status"] = FieldStatus.SKIPPED.value
+                    logger.info(f"[SKIP_PREPROCESS] {skip_field} 标记为 skipped")
+            elif not isinstance(field_data, dict) or field_data.get("status") in ["not_collected", "asked"]:
+                # 字段未开始，直接标记为 skipped
+                if skip_field == "move_date":
+                    fields_status["move_date"] = fields_status.get("move_date", {})
+                    fields_status["move_date"]["status"] = FieldStatus.SKIPPED.value
+                elif skip_field == "to_address":
+                    fields_status["to_address"] = fields_status.get("to_address", {})
+                    fields_status["to_address"]["status"] = FieldStatus.SKIPPED.value
+                elif skip_field == "items":
+                    fields_status["items"] = fields_status.get("items", {"list": []})
+                    fields_status["items"]["status"] = FieldStatus.SKIPPED.value
+                logger.info(f"[SKIP_PREPROCESS] {skip_field} 标记为 skipped (was not_collected)")
+
+            # 更新 session 和 Redis
+            session["fields_status"] = fields_status
+            await redis_client.set_session(
+                session_token=session["session_token"],
+                session_id=session["session_id"],
+                current_phase=session["current_phase"],
+                fields_status=fields_status
+            )
+        else:
+            logger.warning(f"[SKIP_PREPROCESS] intent=skip but no skip_field specified")
 
     # Step 2: Dispatch to appropriate specialist agent
     if agent_type == AgentType.COLLECTOR:
